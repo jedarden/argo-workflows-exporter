@@ -72,7 +72,12 @@ credential of its own for a remote cluster.
 
 ## Usage
 
+No public container image is published yet. Build the image from this checkout
+before running it:
+
 ```bash
+docker build -t argo-workflows-exporter:0.1.0 .
+
 docker run --rm \
   -e CLUSTERS_JSON='[{"name":"ci","base_url":"http://kubectl-proxy.example:8001"}]' \
   -e WORKFLOW_NAMESPACE=argo \
@@ -93,3 +98,7 @@ completed successfully, 503 before that.
 pip install -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
