@@ -68,10 +68,22 @@ Two tables and a sidecar, defined in
   extraction, ledger, Parquet output, S3 upload, health endpoint, container
   image, unit tests, docs. Verified end-to-end against a live Argo
   installation (64 workflows, real extraction, real Parquet round-trip).
-- [ ] **Phase 2: Deployment.** Container build pipeline, Deployment manifest
+- [x] **Phase 2: Deployment.** Container build pipeline, Deployment manifest
   with the S3 credential supplied by reference, and a first consumer reading
-  the output.
-- [ ] **Phase 3: Depth, if wanted.** Candidates, none committed:
+  the output. Shipped 2026-08-11 (`ronaldraygun/argo-workflows-exporter:0.1.0`
+  on ardenone-cluster, consumed by `dashboard.ardenone.com/argo/`).
+- [ ] **Phase 3a: Failure taxonomy (committed 2026-09-01).** `runs.parquet`
+  carries `failed_step_message` as a raw string, so failures cannot be
+  aggregated. Add `failure_fingerprint`: the message normalized by stripping
+  hashes, UUIDs, timestamps, durations, pod names and absolute paths, then
+  hashed to a short stable id, plus `failure_class` from a small reviewed
+  rule table (timeout, OOM, clone/auth, image pull, test failure, lint,
+  build, infrastructure, unknown). Both columns are additive; the raw
+  message stays. This is one of the three join sources for the factory
+  attempt ledger (NEEDLE plan section 4.4): a bead's CI run is joined on the
+  workflow name/commit recorded in `attempt.resolved`, and its fingerprint
+  becomes the CI half of a failure signature.
+- [ ] **Phase 3b: Depth, if wanted.** Candidates, none committed:
   `workflowtemplates` / `cronworkflows` inventory so templates that have
   never run are visible; per-step rows rather than just the first failure;
   decompressing `status.compressedNodes`; queue-time (`created_at` to
