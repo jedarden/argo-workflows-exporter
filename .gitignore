@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+
+# bead-rs: SQLite + locks are ignored by .beads/.gitignore; traces/bypass locks are per-host ephemera
+.beads/traces/
+.beads/bypasses.jsonl.lock
+.beads/bypasses.jsonl.lock.d
