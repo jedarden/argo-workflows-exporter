@@ -1,0 +1,109 @@
+# Failure classes for the `failure_class` column.
+#
+# Ordered: the first entry with a matching pattern wins, so a more specific
+# class must sit above a more general one that would also match. Patterns are
+# Python regexes, matched case-insensitively against the *raw* message
+# (`failed_step_message`, falling back to `message`) — not the normalized one,
+# because normalization deliberately erases exactly the tokens these rules key
+# on (exit codes, durations, paths, image tags).
+#
+# `unknown` is deliberately absent: it is what a row gets when nothing here
+# matches. Adding a rule reclassifies history only as the ledger's rows are
+# re-observed; a run Argo has already reaped keeps the class it was given.
+#
+# Every pattern here should earn its place against a real message. When one is
+# added, add its message to `tests/test_workflows.py::TEST_FAILURE_MESSAGES`.
+
+# A step or workflow ran past its own limit: Argo's activeDeadlineSeconds,
+# a step timeout, a tool-level `--timeout`.
+- class: timeout
+  patterns:
+    - 'deadline exceeded'
+    - 'was active on the node longer than the specified deadline'
+    - 'exceeded (its|the) deadline'
+    - '\b(timed[ _-]?out|timeout)\b'
+
+# The container was killed by the kernel or the runtime for going over its
+# memory reservation.
+- class: oom
+  patterns:
+    - '\boomkilled\b'
+    - '\boom\b'
+    - 'out of memory'
+    - 'memory limit .{0,40}exceeded'
+
+# The workflow could not check out its own source: bad or absent credentials,
+# an inaccessible repo, a revoked deploy key.
+- class: clone_auth
+  patterns:
+    - 'failed to clone'
+    - 'could not read username'
+    - 'authentication required'
+    - 'invalid username or password'
+    - 'permission denied \(publickey\)'
+    - 'fatal: repository .{0,120} not found'
+    - 'http basic access is denied'
+
+# The image reference could not be fetched — a missing or private tag, a bad
+# registry, a rate limit. Distinct from clone_auth even though both are
+# "credentials", because the fixes live in entirely different places.
+- class: image_pull
+  patterns:
+    - 'failed to pull (and unpack )?image'
+    - 'errimagepull'
+    - 'imagepullbackoff'
+    - 'pull access denied'
+    - 'manifest unknown'
+    - '\bno such image\b'
+
+# The pipeline reached its tests and the tests said no.
+- class: test_failure
+  patterns:
+    - '--- fail:'
+    - '\bpytest\b'
+    - '\bfailed tests/'
+    - '\bassert(ion)?\b'
+    - '\d+ failing'
+
+# A lint/format/type gate rejected the change. Above `build` because clippy
+# and friends report through the same compiler machinery a build failure does,
+# and a lint result is the more useful thing to be told.
+- class: lint
+  patterns:
+    - '\b(clippy|ruff|flake8|pylint|eslint|mypy|prettier|rustfmt|golangci)\b'
+    - '\blint(ing)? (failed|error)'
+
+# Compilation, linking, dependency resolution — the code did not produce an
+# artifact to test.
+- class: build
+  patterns:
+    - 'error\[e\d{4}\]'
+    - 'could not compile'
+    - 'compilation (failed|error)'
+    - 'failed to run custom build command'
+    - '\bundefined:'
+    - '\bundefined reference to\b'
+    - 'syntax error'
+    - 'npm err!'
+    - 'make(\[\d+\])?: \*\*\*'
+    - '\bbuild failed\b'
+    - 'failed to build\b'
+
+# The environment broke around the run rather than the code inside it:
+# scheduling, networking, cluster components, disk. This is the class an
+# operator most wants to see aggregated, because retrying is usually the right
+# response and someone has to notice the rate.
+- class: infrastructure
+  patterns:
+    - 'insufficient \w+'
+    - '\bevicted\b'
+    - '\bnode( is| was)? not ready\b'
+    - 'exceeded quota'
+    - 'connection refused'
+    - 'connection reset by peer'
+    - 'no space left on device'
+    - '\bi/o timeout\b'
+    - '\bno such host\b'
+    - '\betcdserver\b'
+    - 'upstream connect error'
+    - 'service unavailable'

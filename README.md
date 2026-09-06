@@ -76,7 +76,7 @@ No public container image is published yet. Build the image from this checkout
 before running it:
 
 ```bash
-docker build -t argo-workflows-exporter:0.1.0 .
+docker build -t argo-workflows-exporter:0.2.0 .
 
 docker run --rm \
   -e CLUSTERS_JSON='[{"name":"ci","base_url":"http://kubectl-proxy.example:8001"}]' \
@@ -86,7 +86,7 @@ docker run --rm \
   -e DEST_S3_SECRET_ACCESS_KEY=... \
   -e DEST_S3_BUCKET=your-bucket \
   -e DEST_S3_PREFIX=argo/data \
-  argo-workflows-exporter:0.1.0
+  argo-workflows-exporter:0.2.0
 ```
 
 `GET /health` on port 8080 (configurable) returns 200 once a cycle has

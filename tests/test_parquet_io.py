@@ -21,6 +21,7 @@ def test_snapshot_roundtrip_preserves_values_and_nulls():
             "finished_at": "2026-08-11T03:32:33Z", "duration_seconds": 62,
             "resources_duration_cpu": 31, "resources_duration_memory": 605,
             "failed_step": None, "failed_step_message": None,
+            "failure_fingerprint": None, "failure_class": None,
             "observed_at": "2026-08-11T04:00:00Z",
         }
     ]
@@ -53,6 +54,26 @@ def test_conform_backfills_a_column_added_by_a_later_release():
     row = conformed.to_pylist()[0]
     assert row["uid"] == "uid-1"
     assert row["failed_step"] is None
+    # Phase 3a's columns are additive in exactly this way: rows written by
+    # 0.1.0 carry no failure taxonomy and read back as null rather than as a
+    # crash on the first cycle after the upgrade.
+    assert row["failure_fingerprint"] is None
+    assert row["failure_class"] is None
+
+
+def test_failure_columns_survive_a_ledger_roundtrip():
+    """The taxonomy is written as opaque strings and reads back unchanged."""
+    rows = [{
+        "uid": "uid-1", "cluster": "ci", "namespace": "argo", "name": "build-abcde",
+        "phase": "Failed", "message": "failed step 'test'",
+        "failed_step": "test", "failed_step_message": "error[E0432]: unresolved import",
+        "failure_fingerprint": "8f49197fbc86", "failure_class": "build",
+        "first_seen_at": "2026-08-11T03:00:00Z", "last_seen_at": "2026-08-11T04:00:00Z",
+    }]
+    table = pq.read_table(io.BytesIO(table_to_parquet_bytes(rows, RUNS_SCHEMA)))
+    [row] = table.to_pylist()
+    for key, value in rows[0].items():
+        assert row[key] == value, key
 
 
 def test_conform_drops_a_column_a_later_release_removed():

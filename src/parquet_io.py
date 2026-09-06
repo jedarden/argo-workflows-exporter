@@ -25,6 +25,11 @@ _WORKFLOW_FIELDS = [
     ("resources_duration_memory", pa.int64()),
     ("failed_step", pa.string()),
     ("failed_step_message", pa.string()),
+    # Phase 3a: the failure message reduced to something groupable. Both are
+    # derived from `failed_step_message` (falling back to `message`), which is
+    # kept unchanged alongside them.
+    ("failure_fingerprint", pa.string()),
+    ("failure_class", pa.string()),
 ]
 
 WORKFLOWS_SCHEMA = pa.schema(_WORKFLOW_FIELDS + [("observed_at", pa.string())])

@@ -21,9 +21,13 @@ def _ts(days_ago):
 
 
 def test_first_observation_stamps_both_timestamps():
-    [row] = merge([], [_observed()], "2026-08-11T04:00:00Z", 7)
-    assert row["first_seen_at"] == "2026-08-11T04:00:00Z"
-    assert row["last_seen_at"] == "2026-08-11T04:00:00Z"
+    # Now, not a fixed date: retention trims anything last seen outside the
+    # window, so a hardcoded timestamp silently expires and the row never
+    # comes back.
+    now = _ts(0)
+    [row] = merge([], [_observed()], now, 7)
+    assert row["first_seen_at"] == now
+    assert row["last_seen_at"] == now
     # observed_at belongs to the snapshot, not the ledger.
     assert "observed_at" not in row
 
