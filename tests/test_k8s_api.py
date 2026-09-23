@@ -1,5 +1,8 @@
+from types import SimpleNamespace
+
 from src.config import Cluster
-from src.k8s_api import list_items, list_path
+from src import k8s_api
+from src.k8s_api import fetch_json, list_items, list_path
 
 _CLUSTER = Cluster(name="ci", base_url="http://proxy.example:8001")
 
@@ -51,3 +54,46 @@ def test_a_failed_page_marks_the_listing_incomplete():
 def test_first_page_failure_is_incomplete_and_empty():
     fetch, _ = _pages(None)
     assert list_items(_CLUSTER, "/p", 10, 500, fetch=fetch) == ([], False)
+
+
+def test_fetch_json_issues_a_plain_get_with_no_watch_parameter(monkeypatch):
+    """The RBAC the README asks for is get/list only. Pin the HTTP behavior
+    that keeps that true: a single non-streaming GET carrying no `watch`
+    request parameter — the shape a watch-based client would not have."""
+    calls = {}
+
+    def fake_get(url, params=None, **kwargs):
+        calls["url"] = url
+        calls["params"] = params
+        calls["kwargs"] = kwargs
+        resp = SimpleNamespace(status_code=200)
+        resp.json = lambda: {"items": [{"a": 1}], "metadata": {}}
+        return resp
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+    body = fetch_json(
+        _CLUSTER, "/apis/argoproj.io/v1alpha1/namespaces/argo/workflows", 10
+    )
+
+    assert body == {"items": [{"a": 1}], "metadata": {}}
+    assert (
+        calls["url"]
+        == "http://proxy.example:8001/apis/argoproj.io/v1alpha1/namespaces/argo/workflows"
+    )
+    assert calls["params"] == {}
+    assert calls["kwargs"].get("stream") is not True
+
+
+def test_paging_never_sends_a_watch_parameter():
+    """Every page request is a plain list call: `limit` and, after the first
+    page, `continue` — nothing else."""
+    fetch, calls = _pages(
+        {"items": [], "metadata": {"continue": "tok"}},
+        {"items": [], "metadata": {}},
+    )
+    list_items(_CLUSTER, "/p", 10, 500, fetch=fetch)
+
+    assert calls
+    for params in calls:
+        assert "watch" not in params
+        assert set(params) <= {"limit", "continue"}

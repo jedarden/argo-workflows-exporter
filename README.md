@@ -61,8 +61,15 @@ Read-only, on every cluster polled:
 ```yaml
 - apiGroups: ["argoproj.io"]
   resources: ["workflows"]
-  verbs: ["get", "list", "watch"]
+  verbs: ["get", "list"]
 ```
+
+`watch` is deliberately not requested. The exporter is a periodic list
+client: each cycle it GETs the collection endpoint and pages through it with
+`limit`/`continue`. It never opens a watch stream, so the `watch` verb would
+grant nothing it can use. Freshness comes from polling faster than the
+shortest `ttlStrategy` window in effect, not from an event stream — see
+[`docs/notes/ttl-and-observation-windows.md`](docs/notes/ttl-and-observation-windows.md).
 
 Each cluster is reached either through this pod's own ServiceAccount (the
 entry with no `base_url`) or over an unauthenticated read-only API proxy at
