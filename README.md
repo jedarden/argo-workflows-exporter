@@ -36,23 +36,27 @@ works through how to choose the interval.
 
 ## Output
 
-Three objects are written under `DEST_S3_PREFIX` (default `argo/data`) every
-cycle:
+Three objects are written under `DEST_S3_PREFIX` (default `argo/data`) after
+every cycle in which at least one cluster completes its listing:
 
-- `workflows.parquet` — one row per `Workflow` object that currently exists,
-  overwritten each cycle
+- `workflows.parquet` — one row per `Workflow` object that currently exists in
+  each cluster whose listing completed, overwritten each cycle
 - `runs.parquet` — the ledger: one row per run ever observed, updated in
   place as a run progresses and retained `RUN_RETENTION_DAYS` past the last
   time it was seen
 - `meta.json` — provenance sidecar: version, generation timestamp, per-cluster
   reachability, and row counts
 
-Column definitions for both tables are in
+An unreachable cluster, or one whose listing fails partway through pagination,
+contributes no rows. Its rows from the previous successful snapshot are **not**
+carried into the new `workflows.parquet`; `meta.json` marks that cluster
+`"ok": false` so consumers do not mistake unavailable data for deletion.
+Column definitions and the full consumer contract are in
 [`docs/notes/output-schema.md`](docs/notes/output-schema.md).
 
-A cycle in which **no** cluster answered writes nothing at all, rather than
-replacing good data with an empty snapshot. `meta.json`'s `generated_at`
-going stale is the signal that collection has stopped.
+A cycle in which **no cluster completes its listing** writes nothing at all,
+rather than replacing good data with an empty snapshot. `meta.json`'s
+`generated_at` going stale is the signal that collection has stopped.
 
 ## Access required
 

@@ -128,7 +128,55 @@ run. A run that finished long before the exporter first started will show a
 }
 ```
 
-`generated_at` doubles as the collection heartbeat: it is only written on a
-cycle that reached at least one cluster, so a consumer can detect a stalled
+`generated_at` doubles as the collection heartbeat: it is only written after
+at least one cluster completes its listing, so a consumer can detect a stalled
 or failing exporter by its age alone. `clusters[].ok` distinguishes a partial
 outage — everything else was still collected and written.
+
+### Snapshot availability
+
+`workflows.parquet` contains complete snapshots only for clusters whose listing
+finished successfully:
+
+- `clusters[].ok == true` and `workflows > 0` means that cluster completed its
+  listing and this many of its rows are present.
+- `clusters[].ok == true` and `workflows == 0` means that cluster completed its
+  listing and was confirmed empty.
+- `clusters[].ok == false` means the cluster was unreachable or any page of
+  its listing failed. Its `workflows` value is always `0`, but that is the count
+  of included rows, **not** a claim that the cluster has no workflows.
+
+An unavailable cluster contributes no rows to the newly published
+`workflows.parquet`, including items returned before pagination failed. Its
+rows from the previous successful snapshot are not copied forward. If at least
+one other cluster succeeds, the new file is a union of the successfully listed
+clusters only, and `meta.json` is updated with the same per-cluster `ok` status.
+Top-level `workflows` counts only those included rows.
+
+If every cluster is unavailable, none of the three objects is written. The
+previous objects remain as the last published generation and
+`meta.generated_at` stops advancing; if there was no previous generation,
+`meta.json` remains absent. `meta.json` does not preserve a separate last
+successful cluster snapshot, so consumers that need one must archive earlier
+outputs themselves.
+
+### Consumer contract
+
+1. Read `meta.json` before interpreting `workflows.parquet`.
+2. Check `generated_at` against the expected polling interval and the
+   consumer's freshness policy. Missing or stale metadata means current data is
+   unavailable for every cluster; the old Parquet is only a last-known snapshot.
+3. For fresh metadata, use rows only for clusters with `ok == true`. Treat an
+   `ok == false` cluster as unavailable, not empty: absence from that cluster
+   does not indicate deletion.
+4. Use `runs.parquet` for historical run state, not as a substitute for an
+   unavailable current cluster snapshot.
+
+The three objects are written in the order shown above, but they are not an
+atomic S3 transaction: `meta.json` is last, and a failed upload can leave a new
+Parquet beside the old sidecar. A consumer that needs to detect concurrent
+publication should read `meta.json` both before and after the Parquet and reject
+a changed `generated_at`; for a non-empty snapshot, its rows' `observed_at`
+must also equal `generated_at`. Strict generation pairing for empty snapshots
+requires coordinated object versions, such as an S3 versioned bucket or an
+external manifest.

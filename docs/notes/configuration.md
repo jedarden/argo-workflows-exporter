@@ -70,13 +70,20 @@ All numeric variables must parse as integers greater than zero.
 
 - **One cluster unreachable** — that cluster contributes no rows and is
   reported `"ok": false` in `meta.json`. Every other cluster is collected and
-  written as normal. Its existing ledger rows are untouched and expire on the
-  usual retention schedule.
+  written as normal. The new `workflows.parquet` contains only rows from
+  successful complete listings; rows from this cluster's previous successful
+  snapshot are not carried forward. Its existing ledger rows are untouched and
+  expire on the usual retention schedule.
 - **A partial listing** (page 2 of 3 fails) is treated as a failure for that
-  cluster, not as a short list. A consumer reads a missing workflow as a
+  cluster, not as a short list. Items already received are discarded along with
+  that cluster's prior snapshot rows. A consumer reads a missing workflow as a
   deleted one, so half an answer would show runs vanishing that are still
   there.
-- **No cluster reachable** — nothing is written at all. `meta.json` keeps its
+- **No cluster listing completes** — nothing is written at all, whether every
+  cluster is unreachable or every listing is incomplete. `meta.json` keeps its
   previous `generated_at`, which is what makes the outage visible downstream.
 - **Any other exception** is logged with a traceback and the loop continues to
   the next interval.
+
+See [`output-schema.md`](output-schema.md#consumer-contract) for the required
+consumer handling of fresh, partial, and unavailable snapshots.
