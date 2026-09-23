@@ -45,8 +45,33 @@ def write_table_bytes(table: pa.Table) -> bytes:
     return buf.getvalue()
 
 
-def table_to_parquet_bytes(rows, schema) -> bytes:
-    return write_table_bytes(pa.Table.from_pylist(rows, schema=schema))
+# File-level Parquet key-value metadata carrying the identity of the cycle
+# that wrote the object. Published alongside the same id in meta.json so a
+# consumer can tell whether the three objects it is reading came from one
+# cycle or from a publication that was torn partway through. See
+# docs/notes/atomic-publication.md.
+GENERATION_ID_KEY = b"generation_id"
+
+
+def stamp_generation(table: pa.Table, generation_id: str) -> pa.Table:
+    return table.replace_schema_metadata({GENERATION_ID_KEY: generation_id})
+
+
+def table_to_parquet_bytes(rows, schema, generation_id: str | None = None) -> bytes:
+    table = pa.Table.from_pylist(rows, schema=schema)
+    if generation_id is not None:
+        table = stamp_generation(table, generation_id)
+    return write_table_bytes(table)
+
+
+def read_generation_id(data: bytes) -> str | None:
+    """Reads a stored object's generation id out of its file metadata, or
+    returns None for an object written before generations existed (or for
+    bytes that are not Parquet at all — callers decide which of those is an
+    error)."""
+    metadata = pq.read_schema(io.BytesIO(data)).metadata or {}
+    value = metadata.get(GENERATION_ID_KEY)
+    return value.decode() if value is not None else None
 
 
 def conform(table: pa.Table, schema: pa.Schema) -> pa.Table:

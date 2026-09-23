@@ -3,6 +3,7 @@ import logging
 import signal
 import sys
 import threading
+import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -39,7 +40,29 @@ def _now() -> str:
 
 
 def _run_cycle(cfg: config.Config, s3) -> bool:
+    """One poll-publish cycle, in three phases. See
+    docs/notes/atomic-publication.md for the full write-ordering contract.
+
+    S3 has no multi-object write, so the three objects of a generation cannot
+    be published atomically. The ordering here is what makes a torn
+    publication harmless instead of silent:
+
+    1. Read phase -- fetch every cluster and download the stored ledger
+       before writing anything. A failure here leaves the stored generation
+       completely untouched.
+    2. Compute phase -- merge and encode all three payloads in memory, so an
+       encode failure also cannot leave a half-published generation.
+    3. Publish phase -- upload workflows.parquet, then runs.parquet, then
+       meta.json. meta.json is last because it is the commit marker: it is
+       the object consumers read first, and every payload it describes is
+       already in place when it lands. All three carry the same
+       `generation_id`, so a consumer can detect the torn set a mid-phase
+       failure leaves behind and hold its previous good generation.
+    """
     generated_at = _now()
+    # Second-resolution timestamps collide if two cycles ever run that close
+    # together; the random suffix makes each publication's id its own.
+    generation_id = f"{generated_at}-{uuid.uuid4().hex[:12]}"
 
     rows, cluster_stats = workflows.fetch_workflows(
         cfg.clusters, cfg.namespace, cfg.http_timeout_seconds, cfg.page_size, generated_at
@@ -54,27 +77,23 @@ def _run_cycle(cfg: config.Config, s3) -> bool:
         log.error("no cluster answered this cycle; leaving stored objects untouched")
         return False
 
-    s3io.upload_bytes(
-        s3, cfg.dest.bucket, f"{cfg.dest_prefix}/workflows.parquet",
-        parquet_io.table_to_parquet_bytes(rows, parquet_io.WORKFLOWS_SCHEMA),
-        "application/octet-stream",
-    )
-
     runs_key = f"{cfg.dest_prefix}/runs.parquet"
     stored = parquet_io.parquet_bytes_to_table(
         s3io.download_bytes(s3, cfg.dest.bucket, runs_key), parquet_io.RUNS_SCHEMA
     )
     merged = ledger.merge(stored.to_pylist(), rows, generated_at, cfg.run_retention_days)
-    s3io.upload_bytes(
-        s3, cfg.dest.bucket, runs_key,
-        parquet_io.table_to_parquet_bytes(merged, parquet_io.RUNS_SCHEMA),
-        "application/octet-stream",
-    )
 
-    meta = json.dumps(
+    workflows_payload = parquet_io.table_to_parquet_bytes(
+        rows, parquet_io.WORKFLOWS_SCHEMA, generation_id
+    )
+    runs_payload = parquet_io.table_to_parquet_bytes(
+        merged, parquet_io.RUNS_SCHEMA, generation_id
+    )
+    meta_payload = json.dumps(
         {
             "version": cfg.version,
             "generated_at": generated_at,
+            "generation_id": generation_id,
             "poll_interval_seconds": cfg.poll_interval_seconds,
             "run_retention_days": cfg.run_retention_days,
             "clusters": cluster_stats,
@@ -82,7 +101,28 @@ def _run_cycle(cfg: config.Config, s3) -> bool:
             "runs": len(merged),
         }
     ).encode()
-    s3io.upload_bytes(s3, cfg.dest.bucket, f"{cfg.dest_prefix}/meta.json", meta, "application/json")
+
+    published = []
+    uploads = (
+        (f"{cfg.dest_prefix}/workflows.parquet", workflows_payload, "application/octet-stream"),
+        (runs_key, runs_payload, "application/octet-stream"),
+        (f"{cfg.dest_prefix}/meta.json", meta_payload, "application/json"),
+    )
+    try:
+        for key, payload, content_type in uploads:
+            s3io.upload_bytes(s3, cfg.dest.bucket, key, payload, content_type)
+            published.append(key)
+    except Exception:
+        log.exception(
+            "publication of generation %s aborted after writing [%s]; objects still on "
+            "the old generation: [%s] -- the stored set is torn and detectable by its "
+            "mismatched generation_ids until the next successful cycle republishes "
+            "all three",
+            generation_id,
+            ", ".join(published) or "none",
+            ", ".join(key for key, _, _ in uploads if key not in published),
+        )
+        raise
     return True
 
 

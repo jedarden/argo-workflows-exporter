@@ -120,6 +120,7 @@ run. A run that finished long before the exporter first started will show a
 {
   "version": "0.2.0",
   "generated_at": "2026-08-11T04:00:00Z",
+  "generation_id": "2026-08-11T04:00:00Z-3f9c2a1b7d44",
   "poll_interval_seconds": 300,
   "run_retention_days": 7,
   "clusters": [{"name": "ci", "ok": true, "workflows": 64}],
@@ -132,6 +133,13 @@ run. A run that finished long before the exporter first started will show a
 at least one cluster completes its listing, so a consumer can detect a stalled
 or failing exporter by its age alone. `clusters[].ok` distinguishes a partial
 outage — everything else was still collected and written.
+
+`generation_id` identifies the publication as a whole: the same id is
+embedded in both Parquet files' file-level metadata, and all three objects of
+one cycle always carry the same id. It is what makes a torn publication —
+one of the three writes failing partway — detectable instead of silently
+misread. See [Atomic publication](atomic-publication.md) for the write
+ordering, retry behavior, and the exact state each failure leaves behind.
 
 ### Snapshot availability
 
@@ -162,21 +170,29 @@ outputs themselves.
 
 ### Consumer contract
 
-1. Read `meta.json` before interpreting `workflows.parquet`.
+1. Read `meta.json` before interpreting either Parquet file.
 2. Check `generated_at` against the expected polling interval and the
    consumer's freshness policy. Missing or stale metadata means current data is
    unavailable for every cluster; the old Parquet is only a last-known snapshot.
-3. For fresh metadata, use rows only for clusters with `ok == true`. Treat an
-   `ok == false` cluster as unavailable, not empty: absence from that cluster
-   does not indicate deletion.
-4. Use `runs.parquet` for historical run state, not as a substitute for an
+3. **Check the generation pairing before mixing objects.** Compare
+   `meta.json`'s `generation_id` with the `generation_id` in each Parquet
+   file's file-level metadata (the Parquet footer alone —
+   `pyarrow.parquet.read_schema`, not a full object read). All three must be
+   equal. A mismatch means one upload failed partway and the stored objects
+   belong to two different cycles: hold the previously paired generation and
+   retry later rather than presenting two cycles as one. The check works for
+   empty snapshots too — the id is in the file metadata, not the rows.
+4. For fresh, paired metadata, use rows only for clusters with `ok == true`.
+   Treat an `ok == false` cluster as unavailable, not empty: absence from that
+   cluster does not indicate deletion. A non-empty snapshot's rows must also
+   carry `observed_at == generated_at`, which follows from the pairing.
+5. Use `runs.parquet` for historical run state, not as a substitute for an
    unavailable current cluster snapshot.
 
-The three objects are written in the order shown above, but they are not an
-atomic S3 transaction: `meta.json` is last, and a failed upload can leave a new
-Parquet beside the old sidecar. A consumer that needs to detect concurrent
-publication should read `meta.json` both before and after the Parquet and reject
-a changed `generated_at`; for a non-empty snapshot, its rows' `observed_at`
-must also equal `generated_at`. Strict generation pairing for empty snapshots
-requires coordinated object versions, such as an S3 versioned bucket or an
-external manifest.
+The three objects are written in the order shown above — data objects first,
+`meta.json` last as the commit marker — but they are not an atomic S3
+transaction, and a failed upload can leave a new Parquet beside the old
+sidecar. Step 3 is what turns that from a silent misreading into a detected
+one; the write ordering, retry behavior, and the exact state each failure
+leaves behind are specified in
+[Atomic publication](atomic-publication.md).

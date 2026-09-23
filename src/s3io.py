@@ -16,7 +16,16 @@ def client(endpoint: S3Endpoint):
         aws_access_key_id=endpoint.access_key_id,
         aws_secret_access_key=endpoint.secret_access_key,
         region_name=endpoint.region,
-        config=BotoConfig(s3={"addressing_style": endpoint.addressing_style}),
+        config=BotoConfig(
+            s3={"addressing_style": endpoint.addressing_style},
+            # Pinned rather than left to the SDK default so every deploy
+            # retries transient S3 errors the same way: standard mode retries
+            # throttling and 5xx with exponential backoff and is quota-aware.
+            # A request that exhausts its attempts raises, which aborts the
+            # cycle and leaves republishing it to the next interval -- see
+            # docs/notes/atomic-publication.md.
+            retries={"max_attempts": 10, "mode": "standard"},
+        ),
     )
 
 

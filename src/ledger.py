@@ -71,8 +71,10 @@ def merge(existing_rows, observed_rows, generated_at: str, retention_days: int):
     if dropped:
         log.info("trimmed %d run(s) last seen before %s", dropped, cutoff)
 
-    # Stable ordering keeps the written object byte-comparable between cycles
+    # Stable ordering keeps the written rows byte-comparable between cycles
     # when nothing changed, and groups each run's history together on disk.
+    # (The file as a whole still differs cycle to cycle: each publication
+    # carries its own generation id in its file metadata.)
     kept.sort(key=lambda r: (r.get("first_seen_at") or "", r.get("uid") or ""))
     log.info("ledger: %d run(s) after merging %d observation(s)", len(kept), updated)
     return kept

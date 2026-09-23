@@ -45,7 +45,16 @@ every cycle in which at least one cluster completes its listing:
   place as a run progresses and retained `RUN_RETENTION_DAYS` past the last
   time it was seen
 - `meta.json` — provenance sidecar: version, generation timestamp, per-cluster
-  reachability, and row counts
+  reachability, and row counts. Written **last**, as the commit marker for
+  the cycle.
+
+S3 has no multi-object write, so a cycle's three objects are not published
+atomically. Every object of a cycle carries the same `generation_id` — in
+`meta.json` and in each Parquet file's metadata — so a consumer can detect a
+publication that was torn partway by a failed upload and hold its last
+complete generation instead of mixing two cycles' data. The write ordering,
+retry behavior, and the state each failure leaves behind are specified in
+[`docs/notes/atomic-publication.md`](docs/notes/atomic-publication.md).
 
 An unreachable cluster, or one whose listing fails partway through pagination,
 contributes no rows. Its rows from the previous successful snapshot are **not**
