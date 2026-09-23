@@ -4,7 +4,7 @@ import json
 import pytest
 from botocore.exceptions import ClientError
 
-from src import main, parquet_io, workflows
+from src import ledger, main, parquet_io, workflows
 from src.config import Cluster, Config, S3Endpoint
 
 
@@ -81,11 +81,11 @@ def _config(clusters):
     )
 
 
-def _workflow(uid, name):
+def _workflow(uid, name, phase="Running", **status):
     return {
         "metadata": {"uid": uid, "name": name, "namespace": "argo", "labels": {}},
         "spec": {},
-        "status": {"phase": "Running"},
+        "status": {"phase": phase, **status},
     }
 
 
@@ -95,6 +95,86 @@ def _list(monkeypatch, responses):
         "list_items",
         lambda cluster, path, timeout, page_size: responses[cluster.name],
     )
+
+
+def test_restart_rehydrates_ledger_and_tracks_running_to_terminal_state(monkeypatch):
+    cfg = _config([Cluster(name="ci")])
+    monkeypatch.setattr(ledger, "_cutoff", lambda retention_days: "2026-09-16T12:00:00Z")
+
+    monkeypatch.setattr(main, "_now", lambda: "2026-09-23T12:00:00Z")
+    _list(
+        monkeypatch,
+        {
+            "ci": (
+                [
+                    _workflow(
+                        "wf-1",
+                        "build-1",
+                        startedAt="2026-09-23T11:00:00Z",
+                    )
+                ],
+                True,
+            )
+        },
+    )
+    first_process = _MemoryS3()
+
+    assert main._run_cycle(cfg, first_process) is True
+
+    first_runs = parquet_io.parquet_bytes_to_table(
+        first_process.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
+    ).to_pylist()
+    assert [(row["uid"], row["phase"], row["duration_seconds"]) for row in first_runs] == [
+        ("wf-1", "Running", None)
+    ]
+
+    restarted_process = _MemoryS3(first_process.objects)
+    monkeypatch.setattr(main, "_now", lambda: "2026-09-23T12:05:00Z")
+    _list(
+        monkeypatch,
+        {
+            "ci": (
+                [
+                    _workflow(
+                        "wf-1",
+                        "build-1",
+                        phase="Succeeded",
+                        startedAt="2026-09-23T11:00:00Z",
+                        finishedAt="2026-09-23T11:01:02Z",
+                        message="completed",
+                    )
+                ],
+                True,
+            )
+        },
+    )
+
+    assert main._run_cycle(cfg, restarted_process) is True
+
+    runs = parquet_io.parquet_bytes_to_table(
+        restarted_process.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
+    ).to_pylist()
+    assert len(runs) == 1
+    assert {
+        key: runs[0][key]
+        for key in (
+            "uid",
+            "phase",
+            "message",
+            "finished_at",
+            "duration_seconds",
+            "first_seen_at",
+            "last_seen_at",
+        )
+    } == {
+        "uid": "wf-1",
+        "phase": "Succeeded",
+        "message": "completed",
+        "finished_at": "2026-09-23T11:01:02Z",
+        "duration_seconds": 62,
+        "first_seen_at": "2026-09-23T12:00:00Z",
+        "last_seen_at": "2026-09-23T12:05:00Z",
+    }
 
 
 def _seed_generation(objects, generated_at, gen_id, snapshot_rows, ledger_rows):
