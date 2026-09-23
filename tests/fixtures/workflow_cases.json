@@ -1,0 +1,265 @@
+{
+  "empty_phase": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-empty-phase",
+      "name": "admission-check-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": ""
+    }
+  },
+  "namespaced_template": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-namespaced-template",
+      "name": "example-build-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {
+        "workflows.argoproj.io/workflow-template": "stale-label"
+      }
+    },
+    "spec": {
+      "workflowTemplateRef": {
+        "name": "example-build"
+      }
+    },
+    "status": {
+      "phase": "Running",
+      "progress": "1/3"
+    }
+  },
+  "cluster_template": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-cluster-template",
+      "name": "shared-build-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {
+        "workflows.argoproj.io/workflow-template": "stale-namespaced-label",
+        "workflows.argoproj.io/cluster-workflow-template": "shared"
+      }
+    },
+    "spec": {
+      "workflowTemplateRef": {
+        "name": "shared",
+        "clusterScope": true
+      }
+    },
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
+  "inline_workflow": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-inline",
+      "name": "inline-build-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {
+      "templates": [
+        {
+          "name": "main",
+          "container": {
+            "image": "example/build:latest"
+          }
+        }
+      ]
+    },
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
+  "cron_precedence": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-cron",
+      "name": "nightly-build-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {
+        "workflows.argoproj.io/cron-workflow": "nightly",
+        "events.argoproj.io/sensor": "repository-sensor",
+        "events.argoproj.io/trigger": "nightly-trigger",
+        "workflows.argoproj.io/creator": "argo-controller"
+      }
+    },
+    "spec": {},
+    "status": {
+      "phase": "Running",
+      "progress": "0/2"
+    }
+  },
+  "event_precedence": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-event",
+      "name": "repository-build-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {
+        "events.argoproj.io/sensor": "repository-sensor",
+        "events.argoproj.io/trigger": "pull-request-trigger",
+        "workflows.argoproj.io/creator": "argo-events-controller"
+      }
+    },
+    "spec": {},
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
+  "completed_workflow": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-completed",
+      "name": "completed-build-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Succeeded",
+      "progress": "2/2",
+      "startedAt": "2026-09-23T12:00:01Z",
+      "finishedAt": "2026-09-23T12:01:03Z",
+      "resourcesDuration": {
+        "cpu": 31,
+        "memory": 605,
+        "nvidia.com/gpu": 7
+      }
+    }
+  },
+  "running_workflow": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-running",
+      "name": "running-build-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Running",
+      "progress": "1/3",
+      "startedAt": "2026-09-23T12:00:01Z",
+      "resourcesDuration": {
+        "cpu": 4,
+        "memory": 64
+      }
+    }
+  },
+  "zero_resources": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-zero-resources",
+      "name": "empty-work-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Succeeded",
+      "resourcesDuration": {
+        "cpu": 0,
+        "memory": 0,
+        "nvidia.com/gpu": 0
+      }
+    }
+  },
+  "earliest_failed_pod": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-failed-pods",
+      "name": "failed-build-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Failed",
+      "message": "workflow failed",
+      "nodes": {
+        "later": {
+          "type": "Pod",
+          "phase": "Error",
+          "displayName": "publish",
+          "startedAt": "2026-09-23T12:10:00Z",
+          "message": "later consequential failure"
+        },
+        "parent": {
+          "type": "DAG",
+          "phase": "Failed",
+          "displayName": "failed-build",
+          "startedAt": "2026-09-23T12:05:00Z",
+          "message": "parent failure"
+        },
+        "earliest": {
+          "type": "Pod",
+          "phase": "Failed",
+          "displayName": "test",
+          "startedAt": "2026-09-23T12:06:00Z",
+          "message": "exit code 1"
+        }
+      }
+    }
+  },
+  "missing_nodes": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-missing-nodes",
+      "name": "missing-nodes-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Succeeded",
+      "nodes": null
+    }
+  },
+  "compressed_nodes": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-compressed-nodes",
+      "name": "large-build-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Failed",
+      "message": "Pod was active on the node longer than the specified deadline",
+      "compressedNodes": "H4sIAAAAAAAA"
+    }
+  }
+}

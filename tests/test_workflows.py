@@ -1,4 +1,6 @@
+import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +16,17 @@ from src.workflows import (
     to_row,
     trigger_of,
 )
+
+
+_WORKFLOW_CASES = json.loads(
+    (Path(__file__).with_name("fixtures") / "workflow_cases.json").read_text(
+        encoding="utf-8"
+    )
+)
+
+
+def _fixture(name):
+    return _WORKFLOW_CASES[name]
 
 
 def _wf(**overrides):
@@ -186,6 +199,129 @@ def test_to_row_shape():
     assert row["observed_at"] == "2026-08-11T04:00:00Z"
     # Extended resources are not kept as columns.
     assert "nvidia.com/gpu" not in row
+
+
+def test_empty_phase_fixture_is_normalized_to_pending():
+    row = to_row(_fixture("empty_phase"), "ci", "2026-09-23T13:00:00Z")
+    assert row["phase"] == "Pending"
+
+
+@pytest.mark.parametrize("status", [{"phase": None}, {"phase": ""}])
+def test_explicitly_empty_phase_values_are_normalized_to_pending(status):
+    row = to_row(_wf(status=status), "ci", "2026-09-23T13:00:00Z")
+    assert row["phase"] == "Pending"
+
+
+def test_namespaced_template_fixture_prefers_the_spec_reference():
+    row = to_row(_fixture("namespaced_template"), "ci", "2026-09-23T13:00:00Z")
+    assert row["template"] == "example-build"
+    assert row["template_scope"] == "namespaced"
+
+
+def test_cluster_template_fixture_propagates_cluster_scope():
+    row = to_row(_fixture("cluster_template"), "ci", "2026-09-23T13:00:00Z")
+    assert row["template"] == "shared"
+    assert row["template_scope"] == "cluster"
+
+
+def test_cluster_template_label_wins_over_namespaced_label():
+    wf = _fixture("cluster_template")
+    wf = {**wf, "spec": {}}
+    assert template_of(wf) == ("shared", "cluster")
+
+
+def test_inline_workflow_fixture_has_no_template_or_scope():
+    row = to_row(_fixture("inline_workflow"), "ci", "2026-09-23T13:00:00Z")
+    assert row["template"] is None
+    assert row["template_scope"] is None
+
+
+def test_cron_trigger_fixture_wins_over_event_and_user_labels():
+    row = to_row(_fixture("cron_precedence"), "ci", "2026-09-23T13:00:00Z")
+    assert row["trigger_kind"] == "cron"
+    assert row["trigger_name"] == "nightly"
+
+
+def test_event_trigger_fixture_wins_over_user_label():
+    row = to_row(_fixture("event_precedence"), "ci", "2026-09-23T13:00:00Z")
+    assert row["trigger_kind"] == "event"
+    assert row["trigger_name"] == "pull-request-trigger"
+
+
+def test_completed_workflow_fixture_preserves_timestamps_and_duration():
+    row = to_row(_fixture("completed_workflow"), "ci", "2026-09-23T13:00:00Z")
+    assert row["created_at"] == "2026-09-23T12:00:00Z"
+    assert row["started_at"] == "2026-09-23T12:00:01Z"
+    assert row["finished_at"] == "2026-09-23T12:01:03Z"
+    assert row["duration_seconds"] == 62
+
+
+def test_running_workflow_fixture_has_no_finished_timestamp_or_duration():
+    row = to_row(_fixture("running_workflow"), "ci", "2026-09-23T13:00:00Z")
+    assert row["started_at"] == "2026-09-23T12:00:01Z"
+    assert row["finished_at"] is None
+    assert row["duration_seconds"] is None
+
+
+def test_duration_handles_fractional_and_offset_timestamps():
+    assert duration_seconds(
+        "2026-09-23T12:00:00.250Z", "2026-09-23T14:00:00.750+01:00"
+    ) == 3600
+
+
+def test_resource_counters_keep_zero_values_and_drop_extended_resources():
+    row = to_row(_fixture("zero_resources"), "ci", "2026-09-23T13:00:00Z")
+    assert row["resources_duration_cpu"] == 0
+    assert row["resources_duration_memory"] == 0
+    assert "nvidia.com/gpu" not in row
+
+
+@pytest.mark.parametrize("resources", [None, {}])
+def test_missing_resource_counters_are_null(resources):
+    row = to_row(
+        _wf(status={"phase": "Succeeded", "resourcesDuration": resources}),
+        "ci",
+        "2026-09-23T13:00:00Z",
+    )
+    assert row["resources_duration_cpu"] is None
+    assert row["resources_duration_memory"] is None
+
+
+def test_earliest_failed_pod_is_selected_independent_of_node_order():
+    wf = _fixture("earliest_failed_pod")
+    assert failed_step(wf) == ("test", "exit code 1")
+    row = to_row(wf, "ci", "2026-09-23T13:00:00Z")
+    assert row["failed_step"] == "test"
+    assert row["failed_step_message"] == "exit code 1"
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        {"phase": "Succeeded"},
+        {"phase": "Succeeded", "nodes": None},
+        {"phase": "Succeeded", "nodes": {}},
+    ],
+)
+def test_missing_node_trees_have_no_failed_step(status):
+    wf = {**_fixture("missing_nodes"), "status": status}
+    assert failed_step(wf) == (None, None)
+    row = to_row(wf, "ci", "2026-09-23T13:00:00Z")
+    assert row["failed_step"] is None
+    assert row["failed_step_message"] is None
+    assert row["failure_fingerprint"] is None
+    assert row["failure_class"] is None
+
+
+def test_compressed_node_fixture_uses_workflow_message_for_failure_columns():
+    wf = _fixture("compressed_nodes")
+    row = to_row(wf, "ci", "2026-09-23T13:00:00Z")
+    assert row["failed_step"] is None
+    assert row["failed_step_message"] is None
+    assert row["message"] == "Pod was active on the node longer than the specified deadline"
+    assert row["failure_class"] == "timeout"
+    _, fingerprint = normalize_failure(row["message"])
+    assert row["failure_fingerprint"] == fingerprint
 
 
 # Real messages, in the shape Argo, Kubernetes and the tooling behind a step
