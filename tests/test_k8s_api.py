@@ -21,7 +21,13 @@ def _pages(*pages):
 
 def test_list_path_is_cluster_scoped_when_no_namespace_is_set():
     assert list_path("", "workflows") == "/apis/argoproj.io/v1alpha1/workflows"
-    assert list_path("argo", "workflows") == "/apis/argoproj.io/v1alpha1/namespaces/argo/workflows"
+
+
+def test_list_path_is_namespaced_when_a_namespace_is_set():
+    assert (
+        list_path("argo", "workflows")
+        == "/apis/argoproj.io/v1alpha1/namespaces/argo/workflows"
+    )
 
 
 def test_single_page_listing():
@@ -30,17 +36,21 @@ def test_single_page_listing():
     assert (items, complete) == ([{"a": 1}], True)
 
 
-def test_paging_follows_the_continue_token():
+def test_paging_follows_each_continue_token_and_completes():
     fetch, calls = _pages(
-        {"items": [{"a": 1}], "metadata": {"continue": "tok"}},
-        {"items": [{"a": 2}], "metadata": {}},
+        {"items": [{"a": 1}], "metadata": {"continue": "tok-1"}},
+        {"items": [{"a": 2}], "metadata": {"continue": "tok-2"}},
+        {"items": [{"a": 3}], "metadata": {}},
     )
     items, complete = list_items(_CLUSTER, "/p", 10, 500, fetch=fetch)
 
     assert complete is True
-    assert items == [{"a": 1}, {"a": 2}]
-    assert calls[0] == {"limit": 500}
-    assert calls[1] == {"limit": 500, "continue": "tok"}
+    assert items == [{"a": 1}, {"a": 2}, {"a": 3}]
+    assert calls == [
+        {"limit": 500},
+        {"limit": 500, "continue": "tok-1"},
+        {"limit": 500, "continue": "tok-2"},
+    ]
 
 
 def test_a_failed_page_marks_the_listing_incomplete():
@@ -84,6 +94,32 @@ def test_fetch_json_issues_a_plain_get_with_no_watch_parameter(monkeypatch):
     assert calls["kwargs"].get("stream") is not True
 
 
+def test_fetch_json_routes_a_proxied_cluster_and_passes_the_timeout(monkeypatch):
+    calls = {}
+
+    def fake_get(url, params=None, **kwargs):
+        calls.update(url=url, params=params, kwargs=kwargs)
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {"items": [{"a": 1}], "metadata": {}},
+        )
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+    body = fetch_json(
+        _CLUSTER,
+        "/apis/argoproj.io/v1alpha1/workflows",
+        17,
+        params={"limit": 2},
+    )
+
+    assert body == {"items": [{"a": 1}], "metadata": {}}
+    assert calls == {
+        "url": "http://proxy.example:8001/apis/argoproj.io/v1alpha1/workflows",
+        "params": {"limit": 2},
+        "kwargs": {"timeout": 17},
+    }
+
+
 def test_fetch_json_routes_a_local_cluster_through_the_service_account(monkeypatch):
     calls = {}
 
@@ -108,6 +144,49 @@ def test_fetch_json_routes_a_local_cluster_through_the_service_account(monkeypat
         "params": {"limit": 500},
         "timeout": 10,
     }
+
+
+def test_local_request_uses_the_service_account_and_passes_the_timeout(
+    tmp_path, monkeypatch
+):
+    token_path = tmp_path / "token"
+    token_path.write_text("sa-token\n")
+    ca_path = tmp_path / "ca.crt"
+    ca_path.write_text("certificate")
+    monkeypatch.setattr(k8s_api, "_SA_TOKEN_PATH", str(token_path))
+    monkeypatch.setattr(k8s_api, "_SA_CA_PATH", str(ca_path))
+
+    calls = {}
+
+    def fake_get(url, **kwargs):
+        calls.update(url=url, kwargs=kwargs)
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+    response = k8s_api._local_request(
+        "/apis/argoproj.io/v1alpha1/namespaces/argo/workflows",
+        {"limit": 2},
+        17,
+    )
+
+    assert response.status_code == 200
+    assert calls == {
+        "url": "https://kubernetes.default.svc/apis/argoproj.io/v1alpha1/namespaces/argo/workflows",
+        "kwargs": {
+            "params": {"limit": 2},
+            "headers": {"Authorization": "Bearer sa-token"},
+            "verify": str(ca_path),
+            "timeout": 17,
+        },
+    }
+
+
+def test_fetch_json_returns_none_when_the_request_times_out(monkeypatch):
+    def fake_get(*args, **kwargs):
+        raise k8s_api.requests.Timeout("request timed out")
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+    assert fetch_json(_CLUSTER, "/p", 17) is None
 
 
 def test_paging_never_sends_a_watch_parameter():
