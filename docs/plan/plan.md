@@ -57,8 +57,8 @@ Two tables and a sidecar, defined in
 
 - `workflows.parquet` — what exists right now. Answers "what is running", and
   nothing historical.
-- `runs.parquet` — the ledger, keyed by `uid`, outliving the objects it came
-  from. Answers everything historical.
+- `runs.parquet` — the ledger, keyed by (`cluster`, `uid`), outliving the
+  objects it came from. Answers everything historical.
 - `meta.json` — version, `generated_at` heartbeat, per-cluster reachability,
   row counts.
 

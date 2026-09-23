@@ -7,7 +7,7 @@ of columns and differ only in their timestamp columns.
 
 | Column | Type | Null when | Notes |
 |---|---|---|---|
-| `uid` | string | never | `metadata.uid`. The stable identity of a run — names are not unique over time, UIDs are. |
+| `uid` | string | never | `metadata.uid`. Unique within its cluster — names are not unique over time. A run's ledger identity is (`cluster`, `uid`); see [`runs.parquet` semantics](#runsparquet-semantics). |
 | `cluster` | string | never | the `name` given in `CLUSTERS_JSON` |
 | `namespace` | string | never | |
 | `name` | string | never | the generated object name |
@@ -100,7 +100,7 @@ message is preserved but is never reprocessed.
 
 ## `runs.parquet` semantics
 
-One row per run ever observed, keyed by `uid`.
+One row per run ever observed, keyed by (`cluster`, `uid`).
 
 - A run seen again keeps its original `first_seen_at` and takes every other
   value from the newest observation.
@@ -109,6 +109,27 @@ One row per run ever observed, keyed by `uid`.
 - Rows are dropped `RUN_RETENTION_DAYS` after `last_seen_at`. Measuring from
   last observation rather than from `started_at` means a long-running
   workflow is never expired while it is still alive.
+
+**Why the key is the pair, not `uid` alone.** Kubernetes scopes a UID's
+uniqueness to a single cluster's etcd and no further — nothing stops two of
+the configured clusters from minting the same one. A uid-only key would let
+the second cluster's observation overwrite the first's row on every cycle,
+silently keeping one run's history for what were two. Cluster names are
+validated unique in `CLUSTERS_JSON`, which makes the pair unambiguous.
+
+**Migration.** The key change is invisible on disk: `cluster` has been part
+of every row since the first release (both files share one schema), so a
+ledger written by any earlier version reads back unchanged and every run
+still matches its own row. The difference shows only where the old key was
+lossy. Two runs from different clusters that shared a uid were collapsing
+into one row, each cycle overwriting the other under whichever cluster
+wrote first; after the upgrade, the surviving row stays with the cluster
+that last wrote it, and the other cluster's run enters as a new row with a
+fresh `first_seen_at` on its next observation. That collapsed pre-upgrade
+history is already merged and is not un-merged. Renaming a cluster in
+`CLUSTERS_JSON` has the same shape by the same rule: rows under the old
+name are kept until retention expires them, and the renamed cluster's runs
+start new identities.
 
 `first_seen_at` and `last_seen_at` describe *this exporter's* view, not the
 run. A run that finished long before the exporter first started will show a
@@ -232,7 +253,8 @@ outputs themselves.
    cluster does not indicate deletion. A non-empty snapshot's rows must also
    carry `observed_at == generated_at`, which follows from the pairing.
 5. Use `runs.parquet` for historical run state, not as a substitute for an
-   unavailable current cluster snapshot.
+   unavailable current cluster snapshot. Its identity is (`cluster`, `uid`) —
+   join and deduplicate on the pair, never on `uid` alone.
 
 The three objects are written in the order shown above — data objects first,
 `meta.json` last as the commit marker — but they are not an atomic S3
