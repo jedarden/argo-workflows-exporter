@@ -110,6 +110,8 @@ def _seed_generation(objects, generated_at, gen_id, snapshot_rows, ledger_rows):
             "version": "test",
             "generated_at": generated_at,
             "generation_id": gen_id,
+            "poll_interval_seconds": 300,
+            "run_retention_days": 7,
             "clusters": [{"name": "ci", "ok": True, "workflows": len(snapshot_rows)}],
             "workflows": len(snapshot_rows),
             "runs": len(ledger_rows),

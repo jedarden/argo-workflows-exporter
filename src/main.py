@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import config, ledger, parquet_io, s3io, workflows
+from . import config, ledger, meta_schema, parquet_io, s3io, workflows
 
 log = logging.getLogger(__name__)
 
@@ -89,18 +89,22 @@ def _run_cycle(cfg: config.Config, s3) -> bool:
     runs_payload = parquet_io.table_to_parquet_bytes(
         merged, parquet_io.RUNS_SCHEMA, generation_id
     )
-    meta_payload = json.dumps(
-        {
-            "version": cfg.version,
-            "generated_at": generated_at,
-            "generation_id": generation_id,
-            "poll_interval_seconds": cfg.poll_interval_seconds,
-            "run_retention_days": cfg.run_retention_days,
-            "clusters": cluster_stats,
-            "workflows": len(rows),
-            "runs": len(merged),
-        }
-    ).encode()
+    meta = {
+        "version": cfg.version,
+        "generated_at": generated_at,
+        "generation_id": generation_id,
+        "poll_interval_seconds": cfg.poll_interval_seconds,
+        "run_retention_days": cfg.run_retention_days,
+        "clusters": cluster_stats,
+        "workflows": len(rows),
+        "runs": len(merged),
+    }
+    # The sidecar is the commit marker: consumers parse it before either
+    # Parquet file, so a shape regression would publish a generation that
+    # misdescribes itself. This runs in the compute phase -- a refusal here
+    # has written nothing, and the next cycle simply retries.
+    meta_schema.validate(meta)
+    meta_payload = json.dumps(meta).encode()
 
     published = []
     uploads = (

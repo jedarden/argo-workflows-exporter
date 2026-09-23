@@ -129,6 +129,50 @@ run. A run that finished long before the exporter first started will show a
 }
 ```
 
+### Field contract
+
+The sidecar has exactly the eight top-level fields above — no others — with
+these names and types. The contract is enforced by the exporter itself:
+`src/meta_schema.py` holds it as a JSON Schema document (`META_SCHEMA`) plus
+the cross-field rules, and every cycle validates its sidecar against it
+before uploading. A violation refuses the publication rather than shipping a
+commit marker that misdescribes the generation beside it. Consumers may
+apply the same schema to downloaded sidecars.
+
+| Field | Type | Constraint | Meaning |
+|---|---|---|---|
+| `version` | string | non-empty | the exporter release that wrote this generation; `"unknown"` if built without a VERSION file |
+| `generated_at` | string | RFC 3339 UTC, second resolution, literal `Z` (`%Y-%m-%dT%H:%M:%SZ`) | when this cycle ran — see the heartbeat note below |
+| `generation_id` | string | `<generated_at>` + `-` + 12 lowercase hex | this publication's identity — see below |
+| `poll_interval_seconds` | integer | ≥ 1 | the exporter's configured poll interval; what `generated_at`'s freshness should be judged against |
+| `run_retention_days` | integer | ≥ 1 | the configured `RUN_RETENTION_DAYS`; how long `runs.parquet` keeps unseen runs |
+| `clusters` | array | ≥ 1 entry | exactly one entry per configured cluster, in `CLUSTERS_JSON` order |
+| `clusters[].name` | string | non-empty | the cluster's `name` from `CLUSTERS_JSON` |
+| `clusters[].ok` | boolean | strict `true`/`false` | whether this cycle completed that cluster's full listing |
+| `clusters[].workflows` | integer | ≥ 0 | rows this cycle's `workflows.parquet` carries from that cluster |
+| `workflows` | integer | ≥ 0 | total rows in this cycle's `workflows.parquet`; equals the sum of `clusters[].workflows` over `ok == true` entries |
+| `runs` | integer | ≥ 0 | total rows in this cycle's `runs.parquet` — the whole ledger after retention, not this cycle's observations |
+
+Timestamps are always RFC 3339 UTC at second resolution with a literal `Z`
+suffix — never an offset, never sub-second precision, never a naive local
+time. This holds for `generated_at`, for the timestamp embedded in
+`generation_id`, and for the Parquet timestamp columns.
+
+**Row-count meanings.** The two counts are not parallel and must not be read
+as if they were:
+
+- `workflows` counts only what was published this cycle. A cluster with
+  `ok == false` contributes `0` and no rows — that zero is "nothing
+  included", **not** a claim that the cluster has no workflows (see
+  [Snapshot availability](#snapshot-availability)). `clusters[].workflows`
+  sums to it, always.
+- `runs` counts the entire ledger, so it includes runs from a cluster that
+  did not answer this cycle. A failed cluster removes its workflows rows
+  from the new snapshot but keeps its runs: history is never withdrawn
+  because a listing failed. That is why `runs` can exceed `workflows` even
+  in a fully healthy cycle — runs persist after Argo deletes them, snapshot
+  rows do not.
+
 `generated_at` doubles as the collection heartbeat: it is only written after
 at least one cluster completes its listing, so a consumer can detect a stalled
 or failing exporter by its age alone. `clusters[].ok` distinguishes a partial
@@ -138,7 +182,8 @@ outage — everything else was still collected and written.
 embedded in both Parquet files' file-level metadata, and all three objects of
 one cycle always carry the same id. It is what makes a torn publication —
 one of the three writes failing partway — detectable instead of silently
-misread. See [Atomic publication](atomic-publication.md) for the write
+misread. The embedded timestamp is the cycle's `generated_at`, so ids sort
+with time. See [Atomic publication](atomic-publication.md) for the write
 ordering, retry behavior, and the exact state each failure leaves behind.
 
 ### Snapshot availability
