@@ -2,6 +2,8 @@ import re
 
 import pytest
 
+from src import workflows
+from src.config import Cluster
 from src.workflows import (
     _load_failure_classes,
     duration_seconds,
@@ -29,6 +31,55 @@ def _wf(**overrides):
     for key, value in overrides.items():
         wf[key] = value
     return wf
+
+
+def test_fetch_workflows_routes_each_cluster_with_its_namespace_override(monkeypatch):
+    calls = []
+
+    def fake_list_items(cluster, path, timeout, page_size):
+        calls.append((cluster.name, path, timeout, page_size))
+        return [], True
+
+    monkeypatch.setattr(workflows, "list_items", fake_list_items)
+    rows, stats = workflows.fetch_workflows(
+        [
+            Cluster(name="ci", base_url="http://ci.example:8001", namespace="team-a"),
+            Cluster(name="staging", base_url="http://staging.example:8001"),
+        ],
+        "global",
+        17,
+        250,
+        "2026-09-23T20:00:00Z",
+    )
+
+    assert rows == []
+    assert stats == [
+        {"name": "ci", "ok": True, "workflows": 0},
+        {"name": "staging", "ok": True, "workflows": 0},
+    ]
+    assert calls == [
+        ("ci", "/apis/argoproj.io/v1alpha1/namespaces/team-a/workflows", 17, 250),
+        ("staging", "/apis/argoproj.io/v1alpha1/namespaces/global/workflows", 17, 250),
+    ]
+
+
+def test_fetch_workflows_uses_the_cluster_scoped_path_in_all_namespace_mode(monkeypatch):
+    calls = []
+
+    def fake_list_items(cluster, path, timeout, page_size):
+        calls.append(path)
+        return [], True
+
+    monkeypatch.setattr(workflows, "list_items", fake_list_items)
+    workflows.fetch_workflows(
+        [Cluster(name="ci", base_url="http://ci.example:8001")],
+        "",
+        10,
+        500,
+        "2026-09-23T20:00:00Z",
+    )
+
+    assert calls == ["/apis/argoproj.io/v1alpha1/workflows"]
 
 
 def test_template_prefers_the_spec_reference():

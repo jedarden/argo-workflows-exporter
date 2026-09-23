@@ -84,6 +84,32 @@ def test_fetch_json_issues_a_plain_get_with_no_watch_parameter(monkeypatch):
     assert calls["kwargs"].get("stream") is not True
 
 
+def test_fetch_json_routes_a_local_cluster_through_the_service_account(monkeypatch):
+    calls = {}
+
+    def fake_local_request(path, params, timeout):
+        calls.update(path=path, params=params, timeout=timeout)
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {"items": [{"a": 1}], "metadata": {}},
+        )
+
+    monkeypatch.setattr(k8s_api, "_local_request", fake_local_request)
+    body = fetch_json(
+        Cluster(name="local"),
+        "/apis/argoproj.io/v1alpha1/workflows",
+        10,
+        params={"limit": 500},
+    )
+
+    assert body == {"items": [{"a": 1}], "metadata": {}}
+    assert calls == {
+        "path": "/apis/argoproj.io/v1alpha1/workflows",
+        "params": {"limit": 500},
+        "timeout": 10,
+    }
+
+
 def test_paging_never_sends_a_watch_parameter():
     """Every page request is a plain list call: `limit` and, after the first
     page, `continue` — nothing else."""
