@@ -1,11 +1,14 @@
 import http.client
 import io
 import json
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from botocore.exceptions import ClientError
 
-from src import ledger, main, parquet_io, workflows
+from src import k8s_api, ledger, main, meta_schema, parquet_io, s3io, workflows
 from src.config import Cluster, Config, S3Endpoint
 
 
@@ -209,6 +212,204 @@ def _paired(meta, workflows_bytes, runs_bytes):
         parquet_io.read_generation_id(runs_bytes),
     }
     return ids == {meta["generation_id"]}
+
+
+def test_successful_multi_cluster_cycle_publishes_one_readable_generation(monkeypatch):
+    cases = json.loads(
+        (Path(__file__).with_name("fixtures") / "workflow_cases.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    generated_at = "2026-09-23T19:00:00Z"
+    cfg = replace(
+        _config(
+            [
+                Cluster(name="local"),
+                Cluster(
+                    name="remote",
+                    base_url="http://proxy.example:8001",
+                    namespace="argo-prod",
+                ),
+            ]
+        ),
+        namespace="argo",
+        page_size=1,
+        http_timeout_seconds=17,
+    )
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z")
+
+    local_calls = []
+    local_pages = {
+        None: {
+            "items": [cases["namespaced_template"]],
+            "metadata": {"continue": "local-next"},
+        },
+        "local-next": {
+            "items": [cases["compressed_nodes"]],
+            "metadata": {},
+        },
+    }
+
+    def fake_local_request(path, params, timeout):
+        local_calls.append((path, dict(params), timeout))
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: local_pages[params.get("continue")],
+        )
+
+    remote_calls = []
+    remote_pages = {
+        None: {
+            "items": [cases["event_precedence"]],
+            "metadata": {"continue": "remote-next"},
+        },
+        "remote-next": {
+            "items": [cases["completed_workflow"]],
+            "metadata": {},
+        },
+    }
+
+    def fake_get(url, params=None, **kwargs):
+        params = dict(params or {})
+        remote_calls.append((url, params, kwargs))
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: remote_pages[params.get("continue")],
+        )
+
+    monkeypatch.setattr(k8s_api, "_local_request", fake_local_request)
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+
+    prior_runs = [
+        {
+            "uid": "uid-completed",
+            "cluster": "remote",
+            "phase": "Running",
+            "first_seen_at": "2026-09-22T18:00:00Z",
+            "last_seen_at": "2026-09-22T19:00:00Z",
+        },
+        {
+            "uid": "uid-reaped",
+            "cluster": "local",
+            "phase": "Succeeded",
+            "first_seen_at": "2026-09-22T20:00:00Z",
+            "last_seen_at": "2026-09-22T21:00:00Z",
+        },
+    ]
+
+    class RecordingS3(_MemoryS3):
+        def __init__(self, objects=None):
+            super().__init__(objects)
+            self.uploads = []
+
+        def put_object(self, Bucket, Key, Body, ContentType):
+            self.uploads.append((Bucket, Key, ContentType))
+            super().put_object(Bucket, Key, Body, ContentType)
+
+    s3 = RecordingS3(
+        {
+            "argo/data/runs.parquet": parquet_io.table_to_parquet_bytes(
+                prior_runs, parquet_io.RUNS_SCHEMA
+            )
+        }
+    )
+
+    assert main._run_cycle(cfg, s3) is True
+    assert local_calls == [
+        (
+            "/apis/argoproj.io/v1alpha1/namespaces/argo/workflows",
+            {"limit": 1},
+            17,
+        ),
+        (
+            "/apis/argoproj.io/v1alpha1/namespaces/argo/workflows",
+            {"limit": 1, "continue": "local-next"},
+            17,
+        ),
+    ]
+    assert remote_calls == [
+        (
+            "http://proxy.example:8001/apis/argoproj.io/v1alpha1/namespaces/argo-prod/workflows",
+            {"limit": 1},
+            {"timeout": 17},
+        ),
+        (
+            "http://proxy.example:8001/apis/argoproj.io/v1alpha1/namespaces/argo-prod/workflows",
+            {"limit": 1, "continue": "remote-next"},
+            {"timeout": 17},
+        ),
+    ]
+    assert all("watch" not in params for _, params, _ in local_calls)
+    assert all("watch" not in params for _, params, _ in remote_calls)
+    assert s3.uploads == [
+        ("bucket", "argo/data/workflows.parquet", "application/octet-stream"),
+        ("bucket", "argo/data/runs.parquet", "application/octet-stream"),
+        ("bucket", "argo/data/meta.json", "application/json"),
+    ]
+
+    workflows_bytes = s3io.download_bytes(s3, "bucket", "argo/data/workflows.parquet")
+    runs_bytes = s3io.download_bytes(s3, "bucket", "argo/data/runs.parquet")
+    meta = json.loads(s3io.download_bytes(s3, "bucket", "argo/data/meta.json"))
+    meta_schema.validate(meta)
+    assert meta["generated_at"] == generated_at
+    assert meta["generation_id"].startswith(f"{generated_at}-")
+    assert _paired(meta, workflows_bytes, runs_bytes)
+    assert {
+        (stat["name"], stat["ok"], stat["workflows"]) for stat in meta["clusters"]
+    } == {("local", True, 2), ("remote", True, 2)}
+    assert meta["workflows"] == 4
+    assert meta["runs"] == 5
+
+    snapshot_table = parquet_io.parquet_bytes_to_table(
+        workflows_bytes, parquet_io.WORKFLOWS_SCHEMA
+    )
+    runs_table = parquet_io.parquet_bytes_to_table(runs_bytes, parquet_io.RUNS_SCHEMA)
+    assert snapshot_table.schema == parquet_io.WORKFLOWS_SCHEMA
+    assert runs_table.schema == parquet_io.RUNS_SCHEMA
+    snapshot = snapshot_table.to_pylist()
+    runs = runs_table.to_pylist()
+    assert len(snapshot) == meta["workflows"]
+    assert len(runs) == meta["runs"]
+    assert sum(
+        stat["workflows"] for stat in meta["clusters"] if stat["ok"]
+    ) == meta["workflows"]
+
+    snapshot_by_key = {(row["cluster"], row["uid"]): row for row in snapshot}
+    assert set(snapshot_by_key) == {
+        ("local", "uid-namespaced-template"),
+        ("local", "uid-compressed-nodes"),
+        ("remote", "uid-event"),
+        ("remote", "uid-completed"),
+    }
+    assert {row["observed_at"] for row in snapshot} == {generated_at}
+    assert snapshot_by_key["local", "uid-namespaced-template"]["template"] == "example-build"
+    assert snapshot_by_key["local", "uid-namespaced-template"]["template_scope"] == "namespaced"
+    assert snapshot_by_key["local", "uid-compressed-nodes"]["failed_step"] is None
+    assert snapshot_by_key["local", "uid-compressed-nodes"]["failure_class"] == "timeout"
+    assert snapshot_by_key["local", "uid-compressed-nodes"]["failure_fingerprint"] == workflows.normalize_failure(
+        cases["compressed_nodes"]["status"]["message"]
+    )[1]
+    assert snapshot_by_key["remote", "uid-event"]["trigger_kind"] == "event"
+    assert snapshot_by_key["remote", "uid-event"]["trigger_name"] == "pull-request-trigger"
+    assert snapshot_by_key["remote", "uid-completed"]["phase"] == "Succeeded"
+    assert snapshot_by_key["remote", "uid-completed"]["duration_seconds"] == 62
+    assert snapshot_by_key["remote", "uid-completed"]["resources_duration_cpu"] == 31
+    assert snapshot_by_key["remote", "uid-completed"]["resources_duration_memory"] == 605
+
+    runs_by_key = {(row["cluster"], row["uid"]): row for row in runs}
+    assert set(runs_by_key) == {
+        ("local", "uid-reaped"),
+        ("local", "uid-namespaced-template"),
+        ("local", "uid-compressed-nodes"),
+        ("remote", "uid-event"),
+        ("remote", "uid-completed"),
+    }
+    assert runs_by_key["remote", "uid-completed"]["first_seen_at"] == "2026-09-22T18:00:00Z"
+    assert runs_by_key["remote", "uid-completed"]["last_seen_at"] == generated_at
+    assert runs_by_key["remote", "uid-completed"]["phase"] == "Succeeded"
+    assert runs_by_key["local", "uid-reaped"]["first_seen_at"] == "2026-09-22T20:00:00Z"
+    assert runs_by_key["local", "uid-reaped"]["last_seen_at"] == "2026-09-22T21:00:00Z"
 
 
 def test_mixed_reachability_omits_failed_cluster_and_its_prior_rows(monkeypatch):
