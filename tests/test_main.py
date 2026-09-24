@@ -694,6 +694,110 @@ def test_poll_loop_logs_cycle_failure_and_continues_at_the_configured_interval(
     assert "injected cycle failure" in caplog.text
 
 
+def test_poll_loop_exits_after_shutdown_during_sleep(monkeypatch):
+    cfg = _config([Cluster(name="ci")])
+    attempts = []
+    waits = []
+
+    class Stop:
+        def __init__(self):
+            self.stopped = False
+
+        def set(self):
+            self.stopped = True
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, interval):
+            waits.append(interval)
+            self.set()
+            return True
+
+    class Health:
+        def __init__(self):
+            self.successes = 0
+
+        def record_success(self):
+            self.successes += 1
+
+    def cycle(_cfg, _s3):
+        attempts.append(len(attempts) + 1)
+        return True
+
+    stop = Stop()
+    health = Health()
+    monkeypatch.setattr(main, "_run_cycle", cycle)
+    main._run_poll_loop(cfg, object(), stop, health)
+
+    assert attempts == [1]
+    assert waits == [300]
+    assert stop.is_set()
+    assert health.successes == 1
+
+
+def test_shutdown_during_active_cycle_drains_one_paired_generation(monkeypatch):
+    cfg = _config([Cluster(name="ci")])
+    cycle_calls = []
+    waits = []
+
+    class Stop:
+        def __init__(self):
+            self.stopped = False
+
+        def set(self):
+            self.stopped = True
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, interval):
+            waits.append(interval)
+            return self.is_set()
+
+    class Health:
+        def __init__(self):
+            self.successes = 0
+
+        def record_success(self):
+            self.successes += 1
+
+    stop = Stop()
+    health = Health()
+
+    class ShutdownOnFirstPut(_MemoryS3):
+        def put_object(self, Bucket, Key, Body, ContentType):
+            super().put_object(Bucket, Key, Body, ContentType)
+            if Key == "argo/data/workflows.parquet":
+                stop.set()
+
+    _list(monkeypatch, {"ci": ([_workflow("wf-new", "wf-new")], True)})
+    monkeypatch.setattr(main, "_now", lambda: _NEW_GENERATED_AT)
+    real_cycle = main._run_cycle
+
+    def counted_cycle(cycle_cfg, cycle_s3):
+        cycle_calls.append(len(cycle_calls) + 1)
+        return real_cycle(cycle_cfg, cycle_s3)
+
+    monkeypatch.setattr(main, "_run_cycle", counted_cycle)
+    s3 = ShutdownOnFirstPut(_prior_generation())
+    main._run_poll_loop(cfg, s3, stop, health)
+
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    assert cycle_calls == [1]
+    assert stop.is_set()
+    assert waits == [300]
+    assert health.successes == 1
+    assert s3.puts == 3
+    assert meta["generation_id"].startswith(_NEW_GENERATED_AT)
+    assert meta["generation_id"] != _OLD_GEN
+    assert _paired(
+        meta,
+        s3.objects["argo/data/workflows.parquet"],
+        s3.objects["argo/data/runs.parquet"],
+    )
+
+
 def test_incomplete_cycle_does_not_advance_the_health_heartbeat(monkeypatch):
     cfg = _config([Cluster(name="ci")])
 
