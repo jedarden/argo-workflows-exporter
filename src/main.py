@@ -3,34 +3,154 @@ import logging
 import signal
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 from . import config, ledger, meta_schema, parquet_io, s3io, workflows
 
 log = logging.getLogger(__name__)
 
+HEALTH_STALE_AFTER_MULTIPLIER = 2
 _ready = threading.Event()
+
+
+class _HealthState:
+    def __init__(
+        self,
+        poll_interval_seconds,
+        stale_after_seconds=None,
+        monotonic=None,
+        wall_clock=None,
+    ):
+        self.poll_interval_seconds = poll_interval_seconds
+        self.stale_after_seconds = (
+            poll_interval_seconds * HEALTH_STALE_AFTER_MULTIPLIER
+            if stale_after_seconds is None
+            else stale_after_seconds
+        )
+        self._monotonic = time.monotonic if monotonic is None else monotonic
+        self._wall_clock = time.time if wall_clock is None else wall_clock
+        self._lock = threading.Lock()
+        self._last_success = None
+        self._last_success_wall = None
+
+    def reset(self):
+        with self._lock:
+            self._last_success = None
+            self._last_success_wall = None
+        _ready.clear()
+
+    def record_success(self):
+        now = self._monotonic()
+        wall_now = self._wall_clock()
+        with self._lock:
+            self._last_success = now
+            self._last_success_wall = wall_now
+        _ready.set()
+
+    def snapshot(self):
+        now = self._monotonic()
+        with self._lock:
+            last_success = self._last_success
+            last_success_wall = self._last_success_wall
+
+        if last_success is None:
+            _ready.clear()
+            return 503, {"status": "starting", "last_success_at": None}
+
+        age = max(0.0, now - last_success)
+        if age >= self.stale_after_seconds:
+            _ready.clear()
+            return 503, {
+                "status": "stale",
+                "last_success_at": _timestamp(last_success_wall),
+                "age_seconds": round(age, 3),
+            }
+        return 200, {
+            "status": "ok",
+            "last_success_at": _timestamp(last_success_wall),
+            "age_seconds": round(age, 3),
+        }
 
 
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/health":
-            self.send_response(200 if _ready.is_set() else 503)
-            self.end_headers()
+        if urlsplit(self.path).path != "/health":
+            self._write_json(404, {"status": "not_found"})
+            return
+
+        state = getattr(self.server, "health_state", None)
+        if state is None:
+            code = 200 if _ready.is_set() else 503
+            payload = {"status": "ok" if code == 200 else "starting"}
         else:
-            self.send_response(404)
-            self.end_headers()
+            code, payload = state.snapshot()
+        self._write_json(code, payload)
+
+    def _write_json(self, code, payload):
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, fmt, *args):
         pass
 
 
-def _serve_health(port: int):
+def _serve_health(port: int, health_state=None):
     server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    log.info("health server listening on :%d/health", port)
+    if health_state is not None:
+        server.health_state = health_state
+    server.daemon_threads = True
+    started = threading.Event()
+
+    def serve():
+        started.set()
+        server.serve_forever()
+
+    thread = threading.Thread(
+        target=serve,
+        name="health-server",
+        daemon=True,
+    )
+    server.thread = thread
+
+    try:
+        thread.start()
+        if not started.wait(timeout=1):
+            raise RuntimeError("health server did not start")
+    except Exception:
+        server.server_close()
+        raise
+    log.info("health server listening on :%d/health", server.server_address[1])
+    return server
+
+
+def _stop_health(server):
+    if server is None:
+        return
+    thread = getattr(server, "thread", None)
+    try:
+        if thread is None or thread.is_alive():
+            server.shutdown()
+    finally:
+        try:
+            server.server_close()
+        finally:
+            if thread is not None:
+                thread.join()
+
+
+def _timestamp(value):
+    if value is None:
+        return None
+    return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _now() -> str:
@@ -130,6 +250,24 @@ def _run_cycle(cfg: config.Config, s3) -> bool:
     return True
 
 
+def _run_poll_loop(cfg, s3, stop, health_state=None):
+    if health_state is None:
+        health_state = _HealthState(cfg.poll_interval_seconds)
+    while not stop.is_set():
+        try:
+            if _run_cycle(cfg, s3):
+                health_state.record_success()
+                log.info("cycle completed")
+            else:
+                log.warning("cycle did not complete, will retry next interval")
+        except Exception:
+            if stop.is_set():
+                log.exception("cycle failed during shutdown")
+            else:
+                log.exception("cycle failed, will retry next interval")
+        stop.wait(cfg.poll_interval_seconds)
+
+
 def main():
     try:
         cfg = config.load()
@@ -144,22 +282,30 @@ def main():
     )
 
     s3 = s3io.client(cfg.dest)
-
     stop = threading.Event()
-    signal.signal(signal.SIGTERM, lambda *_: stop.set())
-    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    previous_handlers = {}
 
-    _serve_health(cfg.health_port)
+    def request_shutdown(signum, _frame):
+        log.info("received %s, shutting down", signal.Signals(signum).name)
+        stop.set()
 
-    while not stop.is_set():
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        previous_handlers[signum] = signal.signal(signum, request_shutdown)
+
+    health_state = _HealthState(cfg.poll_interval_seconds)
+    health_state.reset()
+    health_server = None
+    try:
+        health_server = _serve_health(cfg.health_port, health_state)
+        _run_poll_loop(cfg, s3, stop, health_state)
+    finally:
+        stop.set()
         try:
-            if _run_cycle(cfg, s3):
-                _ready.set()
-        except Exception:
-            log.exception("cycle failed, will retry next interval")
-        stop.wait(cfg.poll_interval_seconds)
-
-    log.info("stopped")
+            _stop_health(health_server)
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
+            log.info("stopped")
 
 
 if __name__ == "__main__":

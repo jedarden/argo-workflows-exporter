@@ -109,8 +109,11 @@ docker run --rm \
   argo-workflows-exporter:0.2.0
 ```
 
-`GET /health` on port 8080 (configurable) returns 200 once a cycle has
-completed successfully, 503 before that.
+`GET /health` on port 8080 (configurable) returns a JSON response and HTTP
+200 once a cycle has completed successfully, 503 before the first successful
+cycle, and 503 again once the last successful cycle is at least two polling
+intervals old. A failed cycle is retried on the next interval without advancing
+that heartbeat.
 
 ## Development
 

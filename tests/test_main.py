@@ -1,3 +1,4 @@
+import http.client
 import io
 import json
 
@@ -442,3 +443,189 @@ def test_next_successful_cycle_republishes_a_torn_generation_as_one(monkeypatch)
         healed.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
     )
     assert {row["uid"] for row in runs.to_pylist()} == {"wf-old", "wf-new"}
+
+
+def test_poll_loop_logs_cycle_failure_and_continues_at_the_configured_interval(
+    monkeypatch, caplog
+):
+    cfg = _config([Cluster(name="ci")])
+    s3 = object()
+    attempts = []
+    waits = []
+
+    class Stop:
+        def __init__(self):
+            self.stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, interval):
+            waits.append(interval)
+            if len(attempts) >= 2:
+                self.stopped = True
+            return self.stopped
+
+    class Health:
+        def __init__(self):
+            self.successes = 0
+
+        def record_success(self):
+            self.successes += 1
+
+    stop = Stop()
+    health = Health()
+
+    def cycle(_cfg, _s3):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) == 1:
+            raise RuntimeError("injected cycle failure")
+        return True
+
+    monkeypatch.setattr(main, "_run_cycle", cycle)
+    with caplog.at_level("ERROR", logger="src.main"):
+        main._run_poll_loop(cfg, s3, stop, health)
+
+    assert attempts == [1, 2]
+    assert waits == [300, 300]
+    assert health.successes == 1
+    assert "cycle failed, will retry next interval" in caplog.text
+    assert "injected cycle failure" in caplog.text
+
+
+def test_incomplete_cycle_does_not_advance_the_health_heartbeat(monkeypatch):
+    cfg = _config([Cluster(name="ci")])
+
+    class Stop:
+        def __init__(self):
+            self.stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, _interval):
+            self.stopped = True
+            return True
+
+    class Health:
+        def __init__(self):
+            self.successes = 0
+
+        def record_success(self):
+            self.successes += 1
+
+    health = Health()
+    monkeypatch.setattr(main, "_run_cycle", lambda _cfg, _s3: False)
+    main._run_poll_loop(cfg, object(), Stop(), health)
+
+    assert health.successes == 0
+
+
+def _health_request(port, path="/health"):
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+    try:
+        connection.request("GET", path)
+        response = connection.getresponse()
+        return response.status, response.getheader("Content-Type"), response.read()
+    finally:
+        connection.close()
+
+
+def test_health_endpoint_reports_starting_success_and_stale_heartbeat():
+    now = [100.0]
+    state = main._HealthState(
+        10,
+        monotonic=lambda: now[0],
+        wall_clock=lambda: 1_767_225_600.0,
+    )
+    server = main._serve_health(0, state)
+    port = server.server_address[1]
+
+    try:
+        code, content_type, body = _health_request(port)
+        assert code == 503
+        assert content_type == "application/json"
+        assert json.loads(body) == {"status": "starting", "last_success_at": None}
+
+        state.record_success()
+        code, _, body = _health_request(port)
+        assert code == 200
+        assert json.loads(body)["status"] == "ok"
+
+        now[0] = 120.0
+        code, _, body = _health_request(port)
+        assert code == 503
+        assert json.loads(body)["status"] == "stale"
+
+        state.record_success()
+        code, _, body = _health_request(port)
+        assert code == 200
+        assert json.loads(body)["status"] == "ok"
+    finally:
+        main._stop_health(server)
+
+
+def test_health_server_can_be_stopped_before_its_first_request():
+    server = main._serve_health(0)
+    main._stop_health(server)
+
+
+def test_main_stops_health_server_and_restores_signal_handlers(monkeypatch):
+    cfg = _config([Cluster(name="ci")])
+    monkeypatch.setattr(main.config, "load", lambda: cfg)
+    monkeypatch.setattr(main.s3io, "client", lambda _endpoint: object())
+
+    old_handlers = {
+        main.signal.SIGTERM: "old-term-handler",
+        main.signal.SIGINT: "old-int-handler",
+    }
+    installed = {}
+    signal_calls = []
+
+    def fake_signal(signum, handler):
+        signal_calls.append((signum, handler))
+        if handler not in installed.values():
+            installed[signum] = handler
+        return old_handlers[signum]
+
+    monkeypatch.setattr(main.signal, "signal", fake_signal)
+
+    class Server:
+        thread = None
+
+        def __init__(self):
+            self.shutdown_called = False
+            self.close_called = False
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+        def server_close(self):
+            self.close_called = True
+
+    server = Server()
+    served = []
+
+    def fake_serve(port, state):
+        served.append((port, state))
+        return server
+
+    def fake_loop(_cfg, _s3, stop, state):
+        served.append(stop)
+        installed[main.signal.SIGTERM](main.signal.SIGTERM, None)
+        assert stop.is_set()
+
+    monkeypatch.setattr(main, "_serve_health", fake_serve)
+    monkeypatch.setattr(main, "_run_poll_loop", fake_loop)
+
+    main.main()
+
+    assert served[0][0] == cfg.health_port
+    assert isinstance(served[0][1], main._HealthState)
+    assert served[1].is_set()
+    assert server.shutdown_called
+    assert server.close_called
+    assert signal_calls[-2:] == [
+        (main.signal.SIGTERM, old_handlers[main.signal.SIGTERM]),
+        (main.signal.SIGINT, old_handlers[main.signal.SIGINT]),
+    ]

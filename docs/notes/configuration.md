@@ -60,7 +60,7 @@ ServiceAccount, and there is only one of those.
 | `RUN_RETENTION_DAYS` | `7` | How long a run stays in `runs.parquet` after it was **last observed**, not after it started |
 | `HTTP_TIMEOUT_SECONDS` | `10` | per API request |
 | `LIST_PAGE_SIZE` | `500` | Kubernetes list page size; the exporter follows `continue` tokens to the end |
-| `HEALTH_PORT` | `8080` | `GET /health` |
+| `HEALTH_PORT` | `8080` | `GET /health`; returns JSON and HTTP 200 only while a successful cycle is less than two polling intervals old |
 | `LOG_LEVEL` | `INFO` | |
 | `VERSION_FILE` | `VERSION` | read once at startup, reported in `meta.json` |
 
@@ -83,7 +83,9 @@ All numeric variables must parse as integers greater than zero.
   cluster is unreachable or every listing is incomplete. `meta.json` keeps its
   previous `generated_at`, which is what makes the outage visible downstream.
 - **Any other exception** is logged with a traceback and the loop continues to
-  the next interval.
+  the next interval. The health heartbeat advances only after a cycle publishes
+  all three output objects; once it is two polling intervals old, `/health`
+  returns 503 until a later cycle succeeds.
 
 See [`output-schema.md`](output-schema.md#consumer-contract) for the required
 consumer handling of fresh, partial, and unavailable snapshots.
