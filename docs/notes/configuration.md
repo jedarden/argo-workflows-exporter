@@ -60,7 +60,7 @@ ServiceAccount, and there is only one of those.
 | `RUN_RETENTION_DAYS` | `7` | How long a run stays in `runs.parquet` after it was **last observed**, not after it started |
 | `HTTP_TIMEOUT_SECONDS` | `10` | per API request |
 | `LIST_PAGE_SIZE` | `500` | Kubernetes list page size; the exporter follows `continue` tokens to the end |
-| `HEALTH_PORT` | `8080` | `GET /health`; returns JSON and HTTP 200 only while a successful cycle is less than two polling intervals old |
+| `HEALTH_PORT` | `8080` | `GET /health`; see the [health endpoint contract](../../README.md#health-endpoint) for response fields and status codes |
 | `LOG_LEVEL` | `INFO` | |
 | `VERSION_FILE` | `VERSION` | read once at startup, reported in `meta.json` |
 

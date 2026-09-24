@@ -831,7 +831,7 @@ def _health_request(port, path="/health"):
     try:
         connection.request("GET", path)
         response = connection.getresponse()
-        return response.status, response.getheader("Content-Type"), response.read()
+        return response.status, dict(response.getheaders()), response.read()
     finally:
         connection.close()
 
@@ -847,25 +847,49 @@ def test_health_endpoint_reports_starting_success_and_stale_heartbeat():
     port = server.server_address[1]
 
     try:
-        code, content_type, body = _health_request(port)
+        code, headers, body = _health_request(port)
         assert code == 503
-        assert content_type == "application/json"
+        assert headers["Content-Type"] == "application/json"
+        assert headers["Cache-Control"] == "no-store"
         assert json.loads(body) == {"status": "starting", "last_success_at": None}
 
         state.record_success()
+        code, headers, body = _health_request(port)
+        assert code == 200
+        assert headers["Content-Type"] == "application/json"
+        assert headers["Cache-Control"] == "no-store"
+        assert json.loads(body) == {
+            "status": "ok",
+            "last_success_at": "2026-01-01T00:00:00Z",
+            "age_seconds": 0.0,
+        }
+
+        now[0] = 119.999
         code, _, body = _health_request(port)
         assert code == 200
-        assert json.loads(body)["status"] == "ok"
+        assert json.loads(body) == {
+            "status": "ok",
+            "last_success_at": "2026-01-01T00:00:00Z",
+            "age_seconds": 19.999,
+        }
 
         now[0] = 120.0
         code, _, body = _health_request(port)
         assert code == 503
-        assert json.loads(body)["status"] == "stale"
+        assert json.loads(body) == {
+            "status": "stale",
+            "last_success_at": "2026-01-01T00:00:00Z",
+            "age_seconds": 20.0,
+        }
 
         state.record_success()
         code, _, body = _health_request(port)
         assert code == 200
-        assert json.loads(body)["status"] == "ok"
+        assert json.loads(body) == {
+            "status": "ok",
+            "last_success_at": "2026-01-01T00:00:00Z",
+            "age_seconds": 0.0,
+        }
     finally:
         main._stop_health(server)
 

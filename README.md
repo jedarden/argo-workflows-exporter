@@ -109,11 +109,28 @@ docker run --rm \
   argo-workflows-exporter:0.2.0
 ```
 
-`GET /health` on port 8080 (configurable) returns a JSON response and HTTP
-200 once a cycle has completed successfully, 503 before the first successful
-cycle, and 503 again once the last successful cycle is at least two polling
-intervals old. A failed cycle is retried on the next interval without advancing
-that heartbeat.
+### Health endpoint
+
+`GET /health` listens on port 8080 by default; set `HEALTH_PORT` to change it.
+Every response is compact JSON with `Content-Type: application/json` and
+`Cache-Control: no-store`.
+
+| Condition | HTTP status | Response body |
+|---|---:|---|
+| No cycle has completed successfully yet | 503 | `{"status":"starting","last_success_at":null}` |
+| The last success is younger than two polling intervals | 200 | `{"status":"ok","last_success_at":"2026-01-01T00:00:00Z","age_seconds":12.345}` |
+| The last success is at least two polling intervals old | 503 | `{"status":"stale","last_success_at":"2026-01-01T00:00:00Z","age_seconds":600.0}` |
+
+`status` is `starting`, `ok`, or `stale`. `last_success_at` is `null` during
+startup and otherwise records the successful cycle's completion time in UTC to
+whole-second precision. `age_seconds` is a nonnegative number rounded to three
+decimal places; it is omitted while startup has not yet completed a cycle.
+
+A cycle updates the heartbeat only after it publishes all three output objects.
+A failed cycle does not advance the timestamp, so the endpoint becomes `stale`
+when the original success reaches `2 * POLL_INTERVAL_SECONDS` and remains
+unhealthy until a later cycle succeeds. A later success immediately returns the
+endpoint to HTTP 200.
 
 ## Development
 
