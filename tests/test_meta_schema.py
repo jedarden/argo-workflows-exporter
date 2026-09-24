@@ -180,6 +180,7 @@ def test_mixed_success_cycle_publishes_a_schema_valid_sidecar(monkeypatch):
 
     assert _cycle(monkeypatch, responses, s3) is True
 
+    assert s3.puts == 3
     meta = json.loads(s3.objects["argo/data/meta.json"])
     meta_schema.validate(meta)
     assert {
@@ -226,6 +227,7 @@ def test_no_success_cycle_leaves_the_last_valid_generation_untouched(monkeypatch
 
     assert _cycle(monkeypatch, responses, s3) is False
 
+    assert s3.puts == 0
     assert s3.objects == before
     meta = json.loads(s3.objects["argo/data/meta.json"])
     meta_schema.validate(meta)
