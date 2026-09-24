@@ -106,7 +106,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
 def _serve_health(port: int, health_state=None):
     server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
     if health_state is not None:
-        server.health_state = health_state
+        setattr(server, "health_state", health_state)
     server.daemon_threads = True
     started = threading.Event()
 
@@ -119,7 +119,7 @@ def _serve_health(port: int, health_state=None):
         name="health-server",
         daemon=True,
     )
-    server.thread = thread
+    setattr(server, "thread", thread)
 
     try:
         thread.start()
