@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -370,6 +371,36 @@ FAILURE_CLASSES = {
 }
 
 
+# Expected normalized text and fingerprints are deliberately literal test
+# vectors rather than values calculated by `normalize_failure` in the test.
+# That keeps a changed hash algorithm or normalization rule from making its
+# own tests pass.
+FAILURE_NORMALIZATION_VECTORS = [
+    (
+        "Workflow 0195a1d2-93e5-7c41-9f0e-2b6f1c8d4a77 failed on node "
+        "k3s-worker-01.ec2.internal at 2026-09-06T03:31:30Z: GET "
+        "https://git.ardenone.com/jedarden/perch.git?run=123456 failed from "
+        "/home/coding/argo-workflows-exporter/src/main.py:42 after 1h2m3s: "
+        "pod rust-verify-7gk2m exited 65535, address 10.96.0.1, digest "
+        "d6e0715",
+        "workflow <uuid> failed on node <node> at <ts>: get <url> failed "
+        "from <path> after <dur>: pod <pod> exited <n>, address <ip>, "
+        "digest <hash>",
+        "989aca653675",
+    ),
+    (
+        "Build d6e0715  failed\nafter 1h2m3s:\t/home/coding/repo/src/main.py:42",
+        "build <hash> failed after <dur>: <path>",
+        "78b3f062a931",
+    ),
+    (
+        "error[E0432]: unresolved import crate::workflows",
+        "error[e0432]: unresolved import crate::workflows",
+        "8f49197fbc86",
+    ),
+]
+
+
 @pytest.mark.parametrize("message,expected", FAILURE_MESSAGES)
 def test_failure_class_of_a_real_message(message, expected):
     assert failure_class(message) == expected
@@ -386,6 +417,18 @@ def test_failure_class_without_a_message_is_null():
     assert failure_class(None) is None
     assert failure_class("") is None
     assert failure_class("   ") is None
+
+
+@pytest.mark.parametrize(
+    "message,expected_text,expected_fingerprint", FAILURE_NORMALIZATION_VECTORS
+)
+def test_failure_normalization_matches_literal_vectors(
+    message, expected_text, expected_fingerprint
+):
+    normalized, fingerprint = normalize_failure(message)
+    assert normalized == expected_text
+    assert fingerprint == expected_fingerprint
+    assert fingerprint == hashlib.sha256(expected_text.encode()).hexdigest()[:12]
 
 
 @pytest.mark.parametrize("message,expected", FAILURE_MESSAGES)
@@ -470,21 +513,52 @@ def test_to_row_derives_failure_columns_from_the_step_message():
     )
     row = to_row(wf, "ci", "2026-08-11T04:00:00Z")
     assert row["failure_class"] == "build"
-    _, fingerprint = normalize_failure("error[E0432]: unresolved import crate::workflows")
-    assert row["failure_fingerprint"] == fingerprint
+    assert row["failure_fingerprint"] == "8f49197fbc86"
+
+
+def test_to_row_step_message_takes_precedence_over_workflow_message():
+    wf = _wf(
+        status={
+            "phase": "Failed",
+            "message": "Pod was active on the node longer than the specified deadline",
+            "nodes": {
+                "build": {
+                    "type": "Pod",
+                    "phase": "Failed",
+                    "displayName": "build",
+                    "startedAt": "2026-08-11T03:40:00Z",
+                    "message": "error[E0432]: unresolved import crate::workflows",
+                },
+            },
+        }
+    )
+    row = to_row(wf, "ci", "2026-08-11T04:00:00Z")
+    assert row["failure_class"] == "build"
+    assert row["failure_fingerprint"] == "8f49197fbc86"
 
 
 def test_to_row_falls_back_to_the_workflow_message():
     """A run whose nodes were compressed still has `message` to classify."""
-    wf = _wf(status={"phase": "Failed", "message": "Pod was active on the node "
-                                                 "longer than the specified deadline"})
+    message = "Pod was active on the node longer than the specified deadline"
+    wf = _wf(status={"phase": "Failed", "message": message})
     row = to_row(wf, "ci", "2026-08-11T04:00:00Z")
     assert row["failure_class"] == "timeout"
     assert row["failed_step_message"] is None
-    assert row["failure_fingerprint"]
+    assert row["failure_fingerprint"] == "c1dfe9cfd654"
 
 
 def test_to_row_leaves_failure_columns_null_for_a_clean_run():
     row = to_row(_wf(), "ci", "2026-08-11T04:00:00Z")
+    assert row["failure_fingerprint"] is None
+    assert row["failure_class"] is None
+
+
+@pytest.mark.parametrize("message", [None, "", "   "])
+def test_to_row_leaves_failure_columns_null_without_a_failure_message(message):
+    row = to_row(
+        _wf(status={"phase": "Failed", "message": message}),
+        "ci",
+        "2026-08-11T04:00:00Z",
+    )
     assert row["failure_fingerprint"] is None
     assert row["failure_class"] is None
