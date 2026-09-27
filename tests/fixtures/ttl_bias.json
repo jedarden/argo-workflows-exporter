@@ -1,0 +1,115 @@
+{
+  "description": "A live TTL-biased snapshot must not stand in for the retained run ledger.",
+  "meta": {
+    "version": "fixture",
+    "generated_at": "2026-09-27T12:30:00Z",
+    "generation_id": "2026-09-27T12:30:00Z-777777aaaaaa",
+    "poll_interval_seconds": 300,
+    "run_retention_days": 7,
+    "clusters": [
+      {"name": "ci", "ok": true, "workflows": 2}
+    ],
+    "workflows": 2,
+    "runs": 10
+  },
+  "workflows": {
+    "generation_id": "2026-09-27T12:30:00Z-777777aaaaaa",
+    "rows": [
+      {
+        "uid": "run-success-visible",
+        "cluster": "ci",
+        "phase": "Succeeded",
+        "observed_at": "2026-09-27T12:30:00Z"
+      },
+      {
+        "uid": "run-failure-visible",
+        "cluster": "ci",
+        "phase": "Failed",
+        "observed_at": "2026-09-27T12:30:00Z"
+      }
+    ]
+  },
+  "runs": {
+    "generation_id": "2026-09-27T12:30:00Z-777777aaaaaa",
+    "rows": [
+      {
+        "uid": "run-success-01",
+        "cluster": "ci",
+        "phase": "Succeeded",
+        "first_seen_at": "2026-09-27T12:00:00Z",
+        "last_seen_at": "2026-09-27T12:00:00Z"
+      },
+      {
+        "uid": "run-success-02",
+        "cluster": "ci",
+        "phase": "Succeeded",
+        "first_seen_at": "2026-09-27T12:03:00Z",
+        "last_seen_at": "2026-09-27T12:03:00Z"
+      },
+      {
+        "uid": "run-success-03",
+        "cluster": "ci",
+        "phase": "Succeeded",
+        "first_seen_at": "2026-09-27T12:06:00Z",
+        "last_seen_at": "2026-09-27T12:06:00Z"
+      },
+      {
+        "uid": "run-success-04",
+        "cluster": "ci",
+        "phase": "Succeeded",
+        "first_seen_at": "2026-09-27T12:09:00Z",
+        "last_seen_at": "2026-09-27T12:09:00Z"
+      },
+      {
+        "uid": "run-success-05",
+        "cluster": "ci",
+        "phase": "Succeeded",
+        "first_seen_at": "2026-09-27T12:12:00Z",
+        "last_seen_at": "2026-09-27T12:12:00Z"
+      },
+      {
+        "uid": "run-success-06",
+        "cluster": "ci",
+        "phase": "Succeeded",
+        "first_seen_at": "2026-09-27T12:15:00Z",
+        "last_seen_at": "2026-09-27T12:15:00Z"
+      },
+      {
+        "uid": "run-success-07",
+        "cluster": "ci",
+        "phase": "Succeeded",
+        "first_seen_at": "2026-09-27T12:18:00Z",
+        "last_seen_at": "2026-09-27T12:18:00Z"
+      },
+      {
+        "uid": "run-success-08",
+        "cluster": "ci",
+        "phase": "Succeeded",
+        "first_seen_at": "2026-09-27T12:21:00Z",
+        "last_seen_at": "2026-09-27T12:21:00Z"
+      },
+      {
+        "uid": "run-success-visible",
+        "cluster": "ci",
+        "phase": "Succeeded",
+        "first_seen_at": "2026-09-27T12:24:00Z",
+        "last_seen_at": "2026-09-27T12:30:00Z"
+      },
+      {
+        "uid": "run-failure-visible",
+        "cluster": "ci",
+        "phase": "Failed",
+        "first_seen_at": "2026-09-27T12:27:00Z",
+        "last_seen_at": "2026-09-27T12:30:00Z"
+      }
+    ]
+  },
+  "expected": {
+    "current_counts": {"Succeeded": 1, "Failed": 1},
+    "current_total": 2,
+    "historical_counts": {"Succeeded": 9, "Failed": 1},
+    "historical_total": 10,
+    "historical_success_rate": 0.9,
+    "current_success_rate": 0.5
+  }
+}

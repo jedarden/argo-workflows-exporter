@@ -20,6 +20,7 @@ FIXTURE_PATH = Path(__file__).with_name("fixtures") / "generation_consistency.js
 SCHEMA_EVOLUTION_FIXTURE_PATH = (
     Path(__file__).with_name("fixtures") / "parquet_schema_evolution.json"
 )
+TTL_BIAS_FIXTURE_PATH = Path(__file__).with_name("fixtures") / "ttl_bias.json"
 _C_MAX_SECONDS = 60
 _AT_STALE_BOUNDARY = datetime(2026, 9, 27, 11, 56, tzinfo=timezone.utc)
 
@@ -36,6 +37,10 @@ def _load_fixtures():
 
 def _load_schema_evolution_fixtures():
     return json.loads(SCHEMA_EVOLUTION_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def _load_ttl_bias_fixture():
+    return json.loads(TTL_BIAS_FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
 def _materialize(case):
@@ -88,6 +93,11 @@ def fixtures():
 @pytest.fixture(scope="module")
 def schema_evolution_fixtures():
     return _load_schema_evolution_fixtures()
+
+
+@pytest.fixture(scope="module")
+def ttl_bias_fixture():
+    return _load_ttl_bias_fixture()
 
 
 @pytest.mark.parametrize("release", ["older", "newer"])
@@ -159,6 +169,57 @@ def test_schema_normalization_does_not_depend_on_generation_pairing(
     assert new_runs.column("failure_class").to_pylist() == ["test_failure"]
     assert "retired_column" not in old_workflows.column_names
     assert "retired_column" not in new_runs.column_names
+
+
+def test_ttl_biased_fixture_routes_historical_metrics_to_runs_not_workflows(
+    ttl_bias_fixture,
+):
+    """Historical measures use the retained ledger, while live views use the snapshot.
+
+    The fixture deliberately makes the two populations disagree. Completed
+    successes have the shorter TTL, so the current listing is a biased sample
+    of the retained run history. A consumer that accidentally counts
+    ``workflows.parquet`` for a historical rate will therefore produce the
+    snapshot's 50% result instead of the ledger's 90% result.
+    """
+    publication = _materialize(ttl_bias_fixture)
+
+    assert consumer.is_complete_generation(publication)
+
+    current_rows = parquet_io.parquet_bytes_to_table(
+        publication.workflows, parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    historical_rows = parquet_io.parquet_bytes_to_table(
+        publication.runs, parquet_io.RUNS_SCHEMA
+    ).to_pylist()
+
+    current_counts = {
+        phase: sum(row["phase"] == phase for row in current_rows)
+        for phase in ("Succeeded", "Failed")
+    }
+    historical_counts = {
+        phase: sum(row["phase"] == phase for row in historical_rows)
+        for phase in ("Succeeded", "Failed")
+    }
+    expected = ttl_bias_fixture["expected"]
+
+    # Current-state views may use workflows.parquet: it contains only the
+    # objects that survived their outcome-specific TTL windows.
+    assert current_counts == expected["current_counts"]
+    assert len(current_rows) == expected["current_total"]
+
+    # Historical counts and rates must use runs.parquet, which retains rows
+    # after the corresponding Workflow objects have been reaped.
+    assert historical_counts == expected["historical_counts"]
+    assert len(historical_rows) == expected["historical_total"]
+    historical_success_rate = historical_counts["Succeeded"] / len(historical_rows)
+    assert historical_success_rate == expected["historical_success_rate"]
+
+    # Keep the populations observably different so this contract catches a
+    # future regression that sources historical metrics from the live snapshot.
+    current_success_rate = current_counts["Succeeded"] / len(current_rows)
+    assert current_success_rate == expected["current_success_rate"]
+    assert current_success_rate != historical_success_rate
 
 
 @pytest.mark.parametrize(
