@@ -277,7 +277,13 @@
     "status": {
       "phase": "Failed",
       "message": "Pod was active on the node longer than the specified deadline",
-      "compressedNodes": "H4sIAAAAAAAA"
+      "startedAt": "2026-09-23T12:00:01Z",
+      "finishedAt": "2026-09-23T12:01:03Z",
+      "resourcesDuration": {
+        "cpu": 31,
+        "memory": 605
+      },
+      "compressedNodes": "H4sIAAAAAAAC/yXLsQqDQAyA4VeRzAoxQqG3uXQsHZzcQpPWA8WjyaCI7+4dXT/+/4APx1kFwgESLc28P3lRCOBqDjUsasbfArpFr96raNVmTxNb0cd/r8Gcf67Se0ZCujV4b6gbWgqIAWnMie+pLK9V4Dwv4ESeKXoAAAA="
     }
   }
 }

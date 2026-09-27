@@ -416,9 +416,14 @@ def test_missing_node_trees_have_no_failed_step(status):
 def test_compressed_node_fixture_uses_workflow_message_for_failure_columns():
     wf = _fixture("compressed_nodes")
     row = to_row(wf, "ci", "2026-09-23T13:00:00Z")
+    assert "nodes" not in wf["status"]
+    assert row["phase"] == "Failed"
+    assert row["message"] == "Pod was active on the node longer than the specified deadline"
+    assert row["duration_seconds"] == 62
+    assert row["resources_duration_cpu"] == 31
+    assert row["resources_duration_memory"] == 605
     assert row["failed_step"] is None
     assert row["failed_step_message"] is None
-    assert row["message"] == "Pod was active on the node longer than the specified deadline"
     assert row["failure_class"] == "timeout"
     _, fingerprint = normalize_failure(row["message"])
     assert row["failure_fingerprint"] == fingerprint
