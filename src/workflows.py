@@ -4,7 +4,11 @@ Everything here reads only fields upstream Argo itself sets, so the same
 extraction works against any Argo Workflows installation.
 """
 
+import base64
+import binascii
+import gzip
 import hashlib
+import json
 import logging
 import re
 from datetime import datetime
@@ -204,6 +208,46 @@ def trigger_of(wf):
     return None, None
 
 
+def _decode_compressed_nodes(value):
+    """Decode Argo's base64-encoded gzip node map.
+
+    ``compressedNodes`` is an optimization for large Workflows, not a second
+    node shape: after decompression it contains the same JSON object that
+    would otherwise be present in ``status.nodes``. A malformed value should
+    not make an otherwise usable Workflow disappear, so return an empty map
+    and let the workflow-level failure message remain the fallback.
+    """
+    if not isinstance(value, str) or not value:
+        if value is not None:
+            log.warning(
+                "ignoring malformed status.compressedNodes: expected a non-empty string"
+            )
+        return {}
+
+    try:
+        compressed = base64.b64decode(value, validate=True)
+        decoded = json.loads(gzip.decompress(compressed))
+    except (binascii.Error, EOFError, OSError, TypeError, UnicodeError, ValueError) as exc:
+        log.warning("ignoring malformed status.compressedNodes: %s", exc)
+        return {}
+
+    if not isinstance(decoded, dict):
+        log.warning(
+            "ignoring malformed status.compressedNodes: decoded JSON is %s, expected an object",
+            type(decoded).__name__,
+        )
+        return {}
+
+    # JSON object keys are strings, and valid Argo node values are objects.
+    # Keep only usable entries so a malformed individual node cannot break
+    # failure extraction for the rest of the Workflow.
+    return {
+        node_name: node
+        for node_name, node in decoded.items()
+        if isinstance(node_name, str) and isinstance(node, dict)
+    }
+
+
 def failed_step(wf):
     """`(display_name, message)` of the step that failed, or (None, None).
 
@@ -212,19 +256,28 @@ def failed_step(wf):
     itself instead of the thing that broke. Earliest failure wins — later
     ones are usually consequences of it.
 
-    Returns (None, None) when Argo has compressed the node tree into
-    `status.compressedNodes` (it does this for very large workflows). That is
-    a deliberate omission rather than a decompression step: the field is a
-    convenience, and `message` below still carries Argo's own summary.
+    Argo replaces `status.nodes` with `status.compressedNodes` on very large
+    workflows. Decode that field when the node map is absent; malformed
+    compressed data is treated like a missing node map.
     """
-    nodes = (wf.get("status") or {}).get("nodes") or {}
+    status = wf.get("status") or {}
+    nodes = status.get("nodes")
+    if nodes is None:
+        nodes = _decode_compressed_nodes(status.get("compressedNodes"))
+    if not isinstance(nodes, dict):
+        nodes = {}
     failures = [
         n for n in nodes.values()
-        if n.get("phase") in _TERMINAL_NODE_PHASES and n.get("type") == "Pod"
+        if isinstance(n, dict)
+        and n.get("phase") in _TERMINAL_NODE_PHASES
+        and n.get("type") == "Pod"
     ]
     if not failures:
         return None, None
-    earliest = min(failures, key=lambda n: n.get("startedAt") or "")
+    earliest = min(
+        failures,
+        key=lambda n: n.get("startedAt") if isinstance(n.get("startedAt"), str) else "",
+    )
     return earliest.get("displayName") or earliest.get("name"), earliest.get("message")
 
 

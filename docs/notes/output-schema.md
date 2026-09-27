@@ -127,8 +127,9 @@ version in use. Extended-resource keys such as GPUs are dropped; only `cpu`
 and `memory` are mapped to output columns.
 
 **`failed_step` is a convenience, not a guarantee.** Argo compresses the node
-tree into `status.compressedNodes` on very large workflows, and this exporter
-does not decompress it — those rows get a null `failed_step` and still carry
+tree into `status.compressedNodes` on very large workflows. The exporter
+decodes that base64+gzip node map when `status.nodes` is absent; malformed
+compressed data is ignored, leaving `failed_step` null while still carrying
 `message`.
 
 ## Failure taxonomy

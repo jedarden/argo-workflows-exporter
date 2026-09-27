@@ -432,10 +432,11 @@ def test_successful_multi_cluster_cycle_publishes_one_readable_generation(monkey
     assert {row["observed_at"] for row in snapshot} == {generated_at}
     assert snapshot_by_key["local", "uid-namespaced-template"]["template"] == "example-build"
     assert snapshot_by_key["local", "uid-namespaced-template"]["template_scope"] == "namespaced"
-    assert snapshot_by_key["local", "uid-compressed-nodes"]["failed_step"] is None
-    assert snapshot_by_key["local", "uid-compressed-nodes"]["failure_class"] == "timeout"
+    assert snapshot_by_key["local", "uid-compressed-nodes"]["failed_step"] == "test"
+    assert snapshot_by_key["local", "uid-compressed-nodes"]["failed_step_message"] == "exit code 1"
+    assert snapshot_by_key["local", "uid-compressed-nodes"]["failure_class"] == "unknown"
     assert snapshot_by_key["local", "uid-compressed-nodes"]["failure_fingerprint"] == workflows.normalize_failure(
-        cases["compressed_nodes"]["status"]["message"]
+        "exit code 1"
     )[1]
     assert snapshot_by_key["remote", "uid-event"]["trigger_kind"] == "event"
     assert snapshot_by_key["remote", "uid-event"]["trigger_name"] == "pull-request-trigger"
@@ -458,9 +459,9 @@ def test_successful_multi_cluster_cycle_publishes_one_readable_generation(monkey
     assert runs_by_key["local", "uid-reaped"]["first_seen_at"] == "2026-09-22T20:00:00Z"
     assert runs_by_key["local", "uid-reaped"]["last_seen_at"] == "2026-09-22T21:00:00Z"
 
-    # The same observation feeds both publications. This checks the fallback
-    # failure message, its classification/fingerprint, and nulls for a clean
-    # run at the cycle boundary rather than only in the normalizer unit tests.
+    # The same observation feeds both publications. This checks the decoded
+    # step message, its classification/fingerprint, and nulls for a clean run
+    # at the cycle boundary rather than only in the normalizer unit tests.
     for key in snapshot_by_key:
         assert (
             snapshot_by_key[key]["failure_fingerprint"]
@@ -470,10 +471,10 @@ def test_successful_multi_cluster_cycle_publishes_one_readable_generation(monkey
             snapshot_by_key[key]["failure_class"]
             == runs_by_key[key]["failure_class"]
         )
-    assert snapshot_by_key["local", "uid-compressed-nodes"]["failure_class"] == "timeout"
+    assert snapshot_by_key["local", "uid-compressed-nodes"]["failure_class"] == "unknown"
     assert (
         snapshot_by_key["local", "uid-compressed-nodes"]["failure_fingerprint"]
-        == workflows.normalize_failure(cases["compressed_nodes"]["status"]["message"])[1]
+        == workflows.normalize_failure("exit code 1")[1]
     )
     assert snapshot_by_key["remote", "uid-completed"]["failure_fingerprint"] is None
     assert snapshot_by_key["remote", "uid-completed"]["failure_class"] is None

@@ -1,3 +1,5 @@
+import base64
+import gzip
 import hashlib
 import json
 import re
@@ -32,6 +34,10 @@ _WORKFLOW_CASES = json.loads(
 
 def _fixture(name):
     return _WORKFLOW_CASES[name]
+
+
+def _compressed_nodes(nodes):
+    return base64.b64encode(gzip.compress(json.dumps(nodes).encode())).decode()
 
 
 def _wf(**overrides):
@@ -330,9 +336,67 @@ def test_failed_step_reports_the_earliest_failing_pod_not_its_parents():
     assert failed_step(wf) == ("test", "exit code 1")
 
 
-def test_failed_step_absent_when_nodes_are_compressed():
+def test_failed_step_ignores_malformed_compressed_nodes():
     wf = _wf(status={"phase": "Failed", "compressedNodes": "H4sIA..."})
     assert failed_step(wf) == (None, None)
+
+
+def test_failed_step_decodes_compressed_nodes():
+    wf = _fixture("compressed_nodes")
+
+    assert failed_step(wf) == ("test", "exit code 1")
+
+
+def test_failed_step_ignores_malformed_nodes_inside_compressed_map():
+    wf = _wf(
+        status={
+            "phase": "Failed",
+            "compressedNodes": _compressed_nodes(
+                {
+                    "invalid": None,
+                    "earliest": {
+                        "type": "Pod",
+                        "phase": "Error",
+                        "displayName": "test",
+                        "startedAt": "2026-08-11T03:40:00Z",
+                        "message": "exit code 1",
+                    },
+                }
+            ),
+        }
+    )
+
+    assert failed_step(wf) == ("test", "exit code 1")
+
+
+def test_failed_step_prefers_explicit_nodes_over_compressed_nodes():
+    wf = _wf(
+        status={
+            "phase": "Failed",
+            "nodes": {
+                "explicit": {
+                    "type": "Pod",
+                    "phase": "Failed",
+                    "displayName": "explicit",
+                    "startedAt": "2026-08-11T03:40:00Z",
+                    "message": "explicit failure",
+                }
+            },
+            "compressedNodes": _compressed_nodes(
+                {
+                    "compressed": {
+                        "type": "Pod",
+                        "phase": "Failed",
+                        "displayName": "compressed",
+                        "startedAt": "2026-08-11T03:30:00Z",
+                        "message": "compressed failure",
+                    }
+                }
+            ),
+        }
+    )
+
+    assert failed_step(wf) == ("explicit", "explicit failure")
 
 
 def test_unadmitted_workflow_reports_pending_rather_than_an_empty_phase():
@@ -562,7 +626,7 @@ def test_missing_node_trees_have_no_failed_step(status):
     assert row["failure_class"] is None
 
 
-def test_compressed_node_fixture_uses_workflow_message_for_failure_columns():
+def test_compressed_node_fixture_uses_decoded_step_for_failure_columns():
     wf = _fixture("compressed_nodes")
     row = to_row(wf, "ci", "2026-09-23T13:00:00Z")
     assert "nodes" not in wf["status"]
@@ -571,10 +635,10 @@ def test_compressed_node_fixture_uses_workflow_message_for_failure_columns():
     assert row["duration_seconds"] == 62
     assert row["resources_duration_cpu"] == 31
     assert row["resources_duration_memory"] == 605
-    assert row["failed_step"] is None
-    assert row["failed_step_message"] is None
-    assert row["failure_class"] == "timeout"
-    _, fingerprint = normalize_failure(row["message"])
+    assert row["failed_step"] == "test"
+    assert row["failed_step_message"] == "exit code 1"
+    assert row["failure_class"] == "unknown"
+    _, fingerprint = normalize_failure(row["failed_step_message"])
     assert row["failure_fingerprint"] == fingerprint
 
 
