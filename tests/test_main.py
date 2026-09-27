@@ -44,6 +44,7 @@ class _FailNthPut(_MemoryS3):
     def __init__(self, objects=None, fail_on_put=1):
         super().__init__(objects)
         self.fail_on_put = fail_on_put
+        self.states_after_successful_put = []
 
     def put_object(self, Bucket, Key, Body, ContentType):
         # Counted even when it fails: puts is attempts, not successes.
@@ -53,6 +54,7 @@ class _FailNthPut(_MemoryS3):
                 {"Error": {"Code": "InternalError", "Message": "injected"}}, "PutObject"
             )
         self._store(Bucket, Key, Body, ContentType)
+        self.states_after_successful_put.append(dict(self.objects))
 
 
 class _FailGet(_MemoryS3):
@@ -226,6 +228,18 @@ def _paired(meta, workflows_bytes, runs_bytes):
         parquet_io.read_generation_id(runs_bytes),
     }
     return ids == {meta["generation_id"]}
+
+
+def _consumer_generation(objects, fallback_generation):
+    """Return the generation a pairing-aware consumer is allowed to expose."""
+    meta = json.loads(objects["argo/data/meta.json"])
+    if _paired(
+        meta,
+        objects["argo/data/workflows.parquet"],
+        objects["argo/data/runs.parquet"],
+    ):
+        return meta["generation_id"]
+    return fallback_generation
 
 
 def test_successful_multi_cluster_cycle_publishes_one_readable_generation(monkeypatch):
@@ -992,6 +1006,56 @@ def test_next_successful_cycle_republishes_a_torn_generation_as_one(monkeypatch)
         healed.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
     )
     assert {row["uid"] for row in runs.to_pylist()} == {"wf-old", "wf-new"}
+
+
+@pytest.mark.parametrize("fail_on_put", [1, 2, 3], ids=["workflows", "runs", "meta"])
+def test_retry_after_each_partial_publication_preserves_commit_marker_and_ledger(
+    monkeypatch, fail_on_put
+):
+    """A failed publication is invisible to a pairing-aware consumer until retry commits it."""
+    s3 = _FailNthPut(_prior_generation(), fail_on_put=fail_on_put)
+    old_meta_bytes = s3.objects["argo/data/meta.json"]
+    old_generation = json.loads(old_meta_bytes)["generation_id"]
+
+    with pytest.raises(ClientError) as raised:
+        _one_cluster_state(monkeypatch, s3)
+
+    assert raised.value.cycle_published_objects == list(
+        main._PUBLICATION_OBJECTS[: fail_on_put - 1]
+    )
+    assert s3.objects["argo/data/meta.json"] == old_meta_bytes
+    assert _consumer_generation(s3.objects, old_generation) == old_generation
+
+    # Re-run the cycle against the same storage, including whatever the first
+    # attempt managed to overwrite. The one-shot injector is exhausted, so
+    # this is the successful retry.
+    assert _one_cluster_state(monkeypatch, s3) is True
+
+    final_meta = json.loads(s3.objects["argo/data/meta.json"])
+    final_generation = final_meta["generation_id"]
+    assert final_generation != old_generation
+    assert _paired(
+        final_meta,
+        s3.objects["argo/data/workflows.parquet"],
+        s3.objects["argo/data/runs.parquet"],
+    )
+    assert _consumer_generation(s3.objects, old_generation) == final_generation
+
+    # Every successful PUT before the final meta.json PUT leaves the old
+    # marker in place. A consumer therefore retains the old complete
+    # generation instead of exposing either torn combination.
+    assert len(s3.states_after_successful_put) >= 3
+    for state in s3.states_after_successful_put[:-1]:
+        assert state["argo/data/meta.json"] == old_meta_bytes
+        assert _consumer_generation(state, old_generation) == old_generation
+    assert s3.states_after_successful_put[-1]["argo/data/meta.json"] != old_meta_bytes
+
+    runs = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
+    ).to_pylist()
+    keys = [(row.get("cluster") or "", row["uid"]) for row in runs]
+    assert len(keys) == len(set(keys))
+    assert set(keys) == {("", "wf-old"), ("ci", "wf-new")}
 
 
 def test_poll_loop_logs_cycle_failure_and_continues_at_the_configured_interval(
