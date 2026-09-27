@@ -20,6 +20,7 @@ _LOG_LEVEL_ALIASES = {
 
 _S3_ADDRESSING_STYLES = ("auto", "virtual", "path")
 _DEFAULT_DEST_S3_PREFIX = "argo/data"
+_DEFAULT_POLL_INTERVAL_SECONDS = 300
 _DEFAULT_RUN_RETENTION_DAYS = 7
 
 
@@ -211,7 +212,9 @@ def load() -> Config:
             os.environ.get("DEST_S3_PREFIX", _DEFAULT_DEST_S3_PREFIX)
         ),
         version=_read_version(_optional("VERSION_FILE", "VERSION")),
-        poll_interval_seconds=_positive_int("POLL_INTERVAL_SECONDS", "300"),
+        poll_interval_seconds=_positive_int(
+            "POLL_INTERVAL_SECONDS", str(_DEFAULT_POLL_INTERVAL_SECONDS)
+        ),
         run_retention_days=_run_retention_days(),
         http_timeout_seconds=_positive_int("HTTP_TIMEOUT_SECONDS", "10"),
         page_size=_positive_int("LIST_PAGE_SIZE", "500"),

@@ -256,6 +256,54 @@ def test_s3_defaults_are_applied(monkeypatch):
     assert cfg.dest_prefix == "argo/data"
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, 300), ("45", 45)],
+    ids=["omitted", "valid"],
+)
+def test_poll_interval_seconds_defaults_and_accepts_positive_integer(
+    monkeypatch, raw, expected
+):
+    _env(monkeypatch, '[{"name": "ci", "base_url": "http://p:8001"}]')
+    if raw is None:
+        monkeypatch.delenv("POLL_INTERVAL_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("POLL_INTERVAL_SECONDS", raw)
+
+    assert load().poll_interval_seconds == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["0", "-1", "not-an-integer"],
+    ids=["zero", "negative", "non-integer"],
+)
+def test_invalid_poll_interval_fails_before_health_or_s3(monkeypatch, capsys, raw):
+    _env(
+        monkeypatch,
+        '[{"name": "ci", "base_url": "http://p:8001"}]',
+        POLL_INTERVAL_SECONDS=raw,
+    )
+    started = []
+    monkeypatch.setattr(
+        main,
+        "_serve_health",
+        lambda *args, **kwargs: started.append("health"),
+    )
+    monkeypatch.setattr(
+        main.s3io,
+        "client",
+        lambda *args, **kwargs: started.append("s3"),
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        main.main()
+
+    assert raised.value.code == 1
+    assert started == []
+    assert f"config error: POLL_INTERVAL_SECONDS" in capsys.readouterr().err
+
+
 def test_log_level_defaults_to_info(monkeypatch):
     _env(monkeypatch, '[{"name": "ci", "base_url": "http://p:8001"}]')
     assert load().log_level == "INFO"
