@@ -666,8 +666,8 @@ def test_partial_listing_omits_the_entire_cluster_from_the_new_snapshot(monkeypa
     assert meta["workflows"] == 1
 
 
-def test_partial_pagination_failure_isolated_from_successful_cluster(monkeypatch):
-    """A later-page failure drops the partial answer but not prior history."""
+def test_paginated_request_timeout_isolated_from_successful_cluster(monkeypatch):
+    """A later-page timeout drops only that cluster's partial answer."""
     generated_at = "2026-09-27T12:00:00Z"
     cfg = replace(
         _config(
@@ -690,7 +690,7 @@ def test_partial_pagination_failure_isolated_from_successful_cluster(monkeypatch
                 "items": [_workflow("flaky-partial", "flaky-partial")],
                 "metadata": {"continue": "flaky-next"},
             },
-            "flaky-next": SimpleNamespace(status_code=503),
+            "flaky-next": k8s_api.requests.Timeout("flaky request timed out"),
         },
     }
     calls = []
@@ -700,6 +700,8 @@ def test_partial_pagination_failure_isolated_from_successful_cluster(monkeypatch
         calls.append((url, params, kwargs))
         cluster_url = url.split("/apis/", 1)[0]
         page = pages[cluster_url][params.get("continue")]
+        if isinstance(page, BaseException):
+            raise page
         if isinstance(page, SimpleNamespace):
             return page
         return SimpleNamespace(status_code=200, json=lambda: page)
@@ -783,6 +785,45 @@ def test_partial_pagination_failure_isolated_from_successful_cluster(monkeypatch
     assert meta["workflows"] == 1
     assert meta["runs"] == 4
     _assert_published_counts_and_generation(meta, workflows_bytes, runs_bytes)
+
+
+def test_all_cluster_request_timeouts_preserve_the_previous_generation(monkeypatch):
+    """A cycle with no successful cluster must not write an empty snapshot."""
+    cfg = replace(
+        _config(
+            [
+                Cluster(name="ci", base_url="http://ci.example"),
+                Cluster(name="staging", base_url="http://staging.example"),
+            ]
+        ),
+        http_timeout_seconds=23,
+    )
+    s3 = _RecordingS3(_prior_generation())
+    before = dict(s3.objects)
+    calls = []
+
+    def fake_get(url, params=None, **kwargs):
+        calls.append((url, dict(params or {}), kwargs))
+        raise k8s_api.requests.Timeout("request timed out")
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+
+    assert main._run_cycle(cfg, s3) is False
+    assert calls == [
+        (
+            "http://ci.example/apis/argoproj.io/v1alpha1/workflows",
+            {"limit": 500},
+            {"timeout": 23},
+        ),
+        (
+            "http://staging.example/apis/argoproj.io/v1alpha1/workflows",
+            {"limit": 500},
+            {"timeout": 23},
+        ),
+    ]
+    assert s3.puts == 0
+    assert s3.uploaded_keys == []
+    assert s3.objects == before
 
 
 def test_unreachable_cluster_ledger_rows_follow_last_seen_retention(monkeypatch):
