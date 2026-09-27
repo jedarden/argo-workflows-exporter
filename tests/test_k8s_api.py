@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from src.config import Cluster
 from src import k8s_api
 from src.k8s_api import fetch_json, list_items, list_path
@@ -179,6 +181,90 @@ def test_local_request_uses_the_service_account_and_passes_the_timeout(
             "timeout": 17,
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("cluster", "expected_url", "expected_headers"),
+    [
+        pytest.param(
+            Cluster(name="local"),
+            "https://kubernetes.default.svc/apis/argoproj.io/v1alpha1/workflows",
+            {"Authorization": "Bearer sa-token"},
+            id="local-service-account",
+        ),
+        pytest.param(
+            _CLUSTER,
+            "http://proxy.example:8001/apis/argoproj.io/v1alpha1/workflows",
+            None,
+            id="proxied-cluster",
+        ),
+    ],
+)
+def test_workflow_listing_is_get_only_for_local_and_proxied_clusters(
+    cluster, expected_url, expected_headers, tmp_path, monkeypatch
+):
+    """The local SA and proxy transports must share the read-only contract.
+
+    A get-only transport makes an accidental POST/PUT/PATCH/DELETE (or a
+    watch-specific request method) fail immediately, while the assertions pin
+    the collection-list query shape to only the parameters supported by the
+    get/list RBAC grant.
+    """
+    if cluster.base_url is None:
+        token_path = tmp_path / "token"
+        token_path.write_text("sa-token\n")
+        ca_path = tmp_path / "ca.crt"
+        ca_path.write_text("certificate")
+        monkeypatch.setattr(k8s_api, "_SA_TOKEN_PATH", str(token_path))
+        monkeypatch.setattr(k8s_api, "_SA_CA_PATH", str(ca_path))
+
+    class GetOnlyRequests:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, params=None, **kwargs):
+            params = dict(params or {})
+            self.calls.append((url, params, kwargs))
+            metadata = {"continue": "next-page"} if len(self.calls) == 1 else {}
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {"items": [{"name": f"page-{len(self.calls)}"}], "metadata": metadata},
+            )
+
+    transport = GetOnlyRequests()
+    monkeypatch.setattr(k8s_api, "requests", transport)
+
+    items, complete = list_items(
+        cluster,
+        "/apis/argoproj.io/v1alpha1/workflows",
+        timeout=17,
+        page_size=2,
+    )
+
+    assert complete is True
+    assert items == [{"name": "page-1"}, {"name": "page-2"}]
+    assert transport.calls == [
+        (
+            expected_url,
+            {"limit": 2},
+            {
+                **({"headers": expected_headers, "verify": str(tmp_path / "ca.crt")}
+                   if expected_headers
+                   else {}),
+                "timeout": 17,
+            },
+        ),
+        (
+            expected_url,
+            {"limit": 2, "continue": "next-page"},
+            {
+                **({"headers": expected_headers, "verify": str(tmp_path / "ca.crt")}
+                   if expected_headers
+                   else {}),
+                "timeout": 17,
+            },
+        ),
+    ]
 
 
 def test_fetch_json_returns_none_when_the_request_times_out(monkeypatch):
