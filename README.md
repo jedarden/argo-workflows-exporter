@@ -4,9 +4,13 @@ Polls the Kubernetes API of any number of clusters for Argo `Workflow`
 objects and writes their state as Parquet to any S3-compatible bucket. Runs
 as a long-lived loop — polls on an interval and re-uploads every cycle.
 
-Nothing about any particular installation is hardcoded: every cluster it
-polls, every namespace, every endpoint and every credential is supplied at
-deploy time through environment variables. See
+Nothing about any particular installation is hardcoded: the clusters it polls,
+their namespaces, and any remote proxy URLs are supplied at deploy time
+through environment variables. Cluster and S3 access use different credential
+sources: a local cluster uses this pod's in-cluster Kubernetes endpoint and
+projected ServiceAccount files, a remote cluster uses an unauthenticated API
+proxy, and the S3 destination uses the `DEST_S3_*` endpoint and credential
+variables. See
 [`docs/notes/configuration.md`](docs/notes/configuration.md).
 
 ## Why it keeps its own record
@@ -105,11 +109,22 @@ grant nothing it can use. Freshness comes from polling faster than the
 shortest `ttlStrategy` window in effect, not from an event stream — see
 [`docs/notes/ttl-and-observation-windows.md`](docs/notes/ttl-and-observation-windows.md).
 
-Each cluster is reached either through this pod's own ServiceAccount (the
-entry with no `base_url`) or over an unauthenticated read-only API proxy at
-`base_url`, on whatever private network path makes that URL resolvable from
-the pod. The exporter never needs write access and never holds a cluster
-credential of its own for a remote cluster.
+Cluster access has two mutually exclusive modes:
+
+- A local entry has no `base_url`. It uses the in-cluster Kubernetes endpoint
+  (`https://kubernetes.default.svc`) and this pod's projected
+  ServiceAccount token and CA files at
+  `/var/run/secrets/kubernetes.io/serviceaccount/token` and
+  `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`. These local cluster
+  credentials are not environment variables.
+- A proxied entry has a `base_url`. It calls that read-only API proxy without
+  sending a Kubernetes credential; the URL must be resolvable from the pod
+  over the private network path provided by the deployment. The exporter
+  never holds a credential of its own for a remote cluster.
+
+The S3 destination is separate from cluster authentication. Its endpoint,
+access key, secret key, bucket, and optional region/prefix are supplied with
+the `DEST_S3_*` environment variables.
 
 ## Usage
 
