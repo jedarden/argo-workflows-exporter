@@ -553,6 +553,125 @@ def test_partial_listing_omits_the_entire_cluster_from_the_new_snapshot(monkeypa
     assert meta["workflows"] == 1
 
 
+def test_partial_pagination_failure_isolated_from_successful_cluster(monkeypatch):
+    """A later-page failure drops the partial answer but not prior history."""
+    generated_at = "2026-09-27T12:00:00Z"
+    cfg = replace(
+        _config(
+            [
+                Cluster(name="healthy", base_url="http://healthy.example"),
+                Cluster(name="flaky", base_url="http://flaky.example"),
+            ]
+        ),
+        page_size=1,
+    )
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-20T00:00:00Z")
+
+    pages = {
+        "http://healthy.example": {
+            None: {"items": [_workflow("healthy-current", "healthy-current")]}
+        },
+        "http://flaky.example": {
+            None: {
+                "items": [_workflow("flaky-partial", "flaky-partial")],
+                "metadata": {"continue": "flaky-next"},
+            },
+            "flaky-next": SimpleNamespace(status_code=503),
+        },
+    }
+    calls = []
+
+    def fake_get(url, params=None, **kwargs):
+        params = dict(params or {})
+        calls.append((url, params, kwargs))
+        cluster_url = url.split("/apis/", 1)[0]
+        page = pages[cluster_url][params.get("continue")]
+        if isinstance(page, SimpleNamespace):
+            return page
+        return SimpleNamespace(status_code=200, json=lambda: page)
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+
+    prior_runs = [
+        {
+            "uid": "flaky-old-running",
+            "cluster": "flaky",
+            "phase": "Running",
+            "first_seen_at": "2026-09-25T10:00:00Z",
+            "last_seen_at": "2026-09-26T11:00:00Z",
+        },
+        {
+            "uid": "flaky-old-completed",
+            "cluster": "flaky",
+            "phase": "Succeeded",
+            "first_seen_at": "2026-09-24T10:00:00Z",
+            "last_seen_at": "2026-09-25T11:00:00Z",
+        },
+        {
+            "uid": "healthy-old",
+            "cluster": "healthy",
+            "phase": "Succeeded",
+            "first_seen_at": "2026-09-23T10:00:00Z",
+            "last_seen_at": "2026-09-24T11:00:00Z",
+        },
+    ]
+    s3 = _MemoryS3(
+        {
+            "argo/data/runs.parquet": parquet_io.table_to_parquet_bytes(
+                prior_runs, parquet_io.RUNS_SCHEMA
+            )
+        }
+    )
+
+    assert main._run_cycle(cfg, s3) is True
+    assert calls == [
+        (
+            "http://healthy.example/apis/argoproj.io/v1alpha1/workflows",
+            {"limit": 1},
+            {"timeout": 10},
+        ),
+        (
+            "http://flaky.example/apis/argoproj.io/v1alpha1/workflows",
+            {"limit": 1},
+            {"timeout": 10},
+        ),
+        (
+            "http://flaky.example/apis/argoproj.io/v1alpha1/workflows",
+            {"limit": 1, "continue": "flaky-next"},
+            {"timeout": 10},
+        ),
+    ]
+
+    workflows_bytes = s3.objects["argo/data/workflows.parquet"]
+    runs_bytes = s3.objects["argo/data/runs.parquet"]
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    snapshot = parquet_io.parquet_bytes_to_table(
+        workflows_bytes, parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    runs = parquet_io.parquet_bytes_to_table(runs_bytes, parquet_io.RUNS_SCHEMA).to_pylist()
+
+    assert {(row["cluster"], row["uid"]) for row in snapshot} == {
+        ("healthy", "healthy-current")
+    }
+    assert {row["uid"] for row in snapshot}.isdisjoint(
+        {"flaky-partial", "flaky-old-running", "flaky-old-completed"}
+    )
+    runs_by_key = {(row["cluster"], row["uid"]): row for row in runs}
+    assert runs_by_key["flaky", "flaky-old-running"]["last_seen_at"] == "2026-09-26T11:00:00Z"
+    assert runs_by_key["flaky", "flaky-old-completed"]["last_seen_at"] == "2026-09-25T11:00:00Z"
+    assert ("flaky", "flaky-partial") not in runs_by_key
+    assert runs_by_key["healthy", "healthy-current"]["last_seen_at"] == generated_at
+
+    assert {
+        stat["name"]: (stat["ok"], stat["workflows"])
+        for stat in meta["clusters"]
+    } == {"healthy": (True, 1), "flaky": (False, 0)}
+    assert meta["workflows"] == 1
+    assert meta["runs"] == 4
+    assert _paired(meta, workflows_bytes, runs_bytes)
+
+
 _GENERATED_AT = "2026-09-23T19:00:00Z"
 _OLD_GEN = f"{_GENERATED_AT}-000000aaaaaa"
 _NEW_GENERATED_AT = "2026-09-23T19:01:00Z"
