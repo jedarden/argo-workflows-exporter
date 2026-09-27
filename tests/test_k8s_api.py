@@ -272,6 +272,50 @@ def test_local_request_uses_the_service_account_and_passes_the_timeout(
     }
 
 
+def test_local_credentials_do_not_leak_into_proxied_requests(tmp_path, monkeypatch):
+    token_path = tmp_path / "token"
+    token_path.write_text("local-only-token\n")
+    ca_path = tmp_path / "ca.crt"
+    ca_path.write_text("local-only-certificate")
+    monkeypatch.setattr(k8s_api, "_SA_TOKEN_PATH", str(token_path))
+    monkeypatch.setattr(k8s_api, "_SA_CA_PATH", str(ca_path))
+
+    calls = []
+
+    def fake_get(url, params=None, **kwargs):
+        calls.append((url, params, kwargs))
+        return SimpleNamespace(status_code=200, json=lambda: {"items": [], "metadata": {}})
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+
+    path = "/apis/argoproj.io/v1alpha1/workflows"
+    assert fetch_json(Cluster(name="local"), path, 17, params={"limit": 2}) == {
+        "items": [],
+        "metadata": {},
+    }
+    assert fetch_json(_CLUSTER, path, 17, params={"limit": 2}) == {
+        "items": [],
+        "metadata": {},
+    }
+
+    assert calls == [
+        (
+            f"https://kubernetes.default.svc{path}",
+            {"limit": 2},
+            {
+                "headers": {"Authorization": "Bearer local-only-token"},
+                "verify": str(ca_path),
+                "timeout": 17,
+            },
+        ),
+        (
+            f"http://proxy.example:8001{path}",
+            {"limit": 2},
+            {"timeout": 17},
+        ),
+    ]
+
+
 def test_local_polling_reloads_projected_token_and_ca_after_rotation(
     tmp_path, monkeypatch
 ):
