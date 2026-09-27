@@ -219,6 +219,46 @@ def test_event_trigger_falls_back_to_the_sensor_name():
     assert trigger_of(wf) == ("event", "repo-sensor")
 
 
+@pytest.mark.parametrize(
+    ("labels", "expected"),
+    [
+        pytest.param(
+            {
+                "events.argoproj.io/trigger": "orphan-trigger",
+                "workflows.argoproj.io/creator": "alice",
+            },
+            ("user", "alice"),
+            id="trigger-without-sensor-falls-back-to-creator",
+        ),
+        pytest.param(
+            {
+                "events.argoproj.io/sensor": "repo-sensor",
+                "workflows.argoproj.io/creator": "alice",
+            },
+            ("event", "repo-sensor"),
+            id="sensor-without-trigger-wins-over-creator",
+        ),
+        pytest.param(
+            {
+                "workflows.argoproj.io/cron-workflow": "nightly",
+                "events.argoproj.io/sensor": "repo-sensor",
+                "events.argoproj.io/trigger": "push",
+                "workflows.argoproj.io/creator": "alice",
+            },
+            ("cron", "nightly"),
+            id="cron-wins-over-event-and-creator",
+        ),
+    ],
+)
+def test_trigger_precedence_handles_missing_and_conflicting_labels(labels, expected):
+    wf = _wf()
+    wf["metadata"]["labels"] = labels
+
+    assert trigger_of(wf) == expected
+    row = to_row(wf, "ci", "2026-09-23T13:00:00Z")
+    assert (row["trigger_kind"], row["trigger_name"]) == expected
+
+
 def test_duration_is_none_while_running():
     assert duration_seconds("2026-08-11T03:31:31Z", None) is None
     assert duration_seconds(None, None) is None

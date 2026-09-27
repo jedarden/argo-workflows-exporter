@@ -174,20 +174,33 @@ def template_of(wf):
 
 def trigger_of(wf):
     """What caused this run, as `(kind, name)` — one of `cron`, `event`,
-    `user`, or (None, None) when nothing identifying was recorded."""
+    `user`, or (None, None) when nothing identifying was recorded.
+
+    The labels can coexist on the same Workflow, so select the provenance
+    source in one fixed order: cron, then Argo Events, then creator. An
+    Events trigger label is only meaningful alongside its sensor label; a
+    trigger-only Workflow therefore continues to the creator fallback.
+    """
     labels = (wf.get("metadata") or {}).get("labels") or {}
 
-    if labels.get(LABEL_CRON):
-        return "cron", labels[LABEL_CRON]
+    def non_empty_label(name):
+        value = labels.get(name)
+        return value if isinstance(value, str) and value.strip() else None
+
+    cron = non_empty_label(LABEL_CRON)
+    if cron is not None:
+        return "cron", cron
 
     # An Argo Events sensor names both itself and the specific trigger within
     # it; the trigger is the more useful of the two because one sensor
     # commonly fans out to many.
-    if labels.get(LABEL_SENSOR):
-        return "event", labels.get(LABEL_TRIGGER) or labels[LABEL_SENSOR]
+    sensor = non_empty_label(LABEL_SENSOR)
+    if sensor is not None:
+        return "event", non_empty_label(LABEL_TRIGGER) or sensor
 
-    if labels.get(LABEL_CREATOR):
-        return "user", labels[LABEL_CREATOR]
+    creator = non_empty_label(LABEL_CREATOR)
+    if creator is not None:
+        return "user", creator
     return None, None
 
 
