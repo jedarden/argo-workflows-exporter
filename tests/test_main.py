@@ -2,11 +2,15 @@ import http.client
 import io
 import json
 import logging
+import threading
 from dataclasses import replace
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import unquote, urlsplit
 
+import botocore.endpoint
 import pytest
 import pyarrow as pa
 from botocore.exceptions import ClientError, ReadTimeoutError
@@ -81,6 +85,80 @@ class _RecordingS3(_MemoryS3):
     def put_object(self, Bucket, Key, Body, ContentType):
         self.uploaded_keys.append(Key)
         super().put_object(Bucket, Key, Body, ContentType)
+
+
+class _TransientS3State:
+    """Small HTTP S3 stand-in that fails one upload until retries exhaust."""
+
+    def __init__(self, objects, bucket, fail_key, failure_budget):
+        self.objects = dict(objects)
+        self.bucket = bucket
+        self.fail_key = fail_key
+        self.failures_remaining = failure_budget
+        self.put_attempts = []
+        self.successful_puts = []
+        self.states_after_put_attempt = []
+
+
+def _start_transient_s3(state):
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def _key(self):
+            path = unquote(urlsplit(self.path).path).lstrip("/")
+            bucket, key = path.split("/", 1)
+            assert bucket == state.bucket
+            return key
+
+        def _respond(self, status, body, content_type):
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            self.close_connection = True
+
+        def do_GET(self):
+            key = self._key()
+            try:
+                body = state.objects[key]
+            except KeyError:
+                self._respond(
+                    404,
+                    b"<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>",
+                    "application/xml",
+                )
+                return
+            self._respond(200, body, "application/octet-stream")
+
+        def do_PUT(self):
+            key = self._key()
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length)
+            state.put_attempts.append(key)
+
+            if key == state.fail_key and state.failures_remaining:
+                state.failures_remaining -= 1
+                self._respond(
+                    500,
+                    b"<Error><Code>InternalError</Code><Message>transient</Message></Error>",
+                    "application/xml",
+                )
+            else:
+                state.objects[key] = body
+                state.successful_puts.append(key)
+                self._respond(200, b"<PutObjectResult/>", "application/xml")
+
+            state.states_after_put_attempt.append(dict(state.objects))
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
 
 
 def _config(clusters):
@@ -1939,6 +2017,81 @@ def test_failed_meta_upload_leaves_both_parquets_on_the_new_generation(monkeypat
         s3.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
     )
     assert {row["uid"] for row in runs.to_pylist()} == {"wf-old", "wf-new"}
+
+
+@pytest.mark.parametrize("failed_object", main._PUBLICATION_OBJECTS)
+def test_transient_s3_upload_failure_retries_and_recovers_on_a_later_cycle(
+    monkeypatch, failed_object
+):
+    """Botocore retries each transient PUT, then the next cycle repairs a hard failure."""
+    cfg = _config([Cluster(name="ci")])
+    old_objects = _prior_generation()
+    old_meta_bytes = old_objects["argo/data/meta.json"]
+    old_generation = json.loads(old_meta_bytes)["generation_id"]
+    failed_key = f"argo/data/{failed_object}"
+    # Config(max_attempts=10) means one initial request plus ten retries.
+    state = _TransientS3State(old_objects, cfg.dest.bucket, failed_key, failure_budget=11)
+    server, thread = _start_transient_s3(state)
+    monkeypatch.setattr(botocore.endpoint.time, "sleep", lambda _delay: None)
+    endpoint = replace(
+        cfg.dest,
+        endpoint_url=f"http://127.0.0.1:{server.server_port}",
+    )
+    s3 = s3io.client(endpoint)
+    _list(monkeypatch, {"ci": ([_workflow("wf-new", "wf-new")], True)})
+    monkeypatch.setattr(main, "_now", lambda: _NEW_GENERATED_AT)
+
+    try:
+        with pytest.raises(ClientError) as raised:
+            main._run_cycle(cfg, s3)
+
+        failed_index = main._PUBLICATION_OBJECTS.index(failed_object)
+        assert raised.value.cycle_failure_phase == "publish"
+        assert raised.value.cycle_published_objects == list(
+            main._PUBLICATION_OBJECTS[:failed_index]
+        )
+        assert state.put_attempts.count(failed_key) == 11
+        assert state.successful_puts == [
+            f"argo/data/{name}" for name in main._PUBLICATION_OBJECTS[:failed_index]
+        ]
+
+        # A retried request can leave earlier data objects newer, but the old
+        # marker still names the only generation a consumer may expose.
+        assert state.objects["argo/data/meta.json"] == old_meta_bytes
+        assert _consumer_generation(state.objects, old_generation) == old_generation
+        for snapshot in state.states_after_put_attempt:
+            assert snapshot["argo/data/meta.json"] == old_meta_bytes
+            assert _consumer_generation(snapshot, old_generation) == old_generation
+
+        # The next scheduled cycle starts from the stored ledger and republishes
+        # all three objects once the transient condition has cleared.
+        state.failures_remaining = 0
+        recovered_at = "2026-09-23T19:02:00Z"
+        monkeypatch.setattr(main, "_now", lambda: recovered_at)
+        before_recovery = len(state.states_after_put_attempt)
+        assert main._run_cycle(cfg, s3) is True
+
+        recovery_states = state.states_after_put_attempt[before_recovery:]
+        final_meta = json.loads(state.objects["argo/data/meta.json"])
+        assert final_meta["generated_at"] == recovered_at
+        assert final_meta["generation_id"] != old_generation
+        assert _paired(
+            final_meta,
+            state.objects["argo/data/workflows.parquet"],
+            state.objects["argo/data/runs.parquet"],
+        )
+        assert state.successful_puts[-3:] == [
+            f"argo/data/{name}" for name in main._PUBLICATION_OBJECTS
+        ]
+        assert [
+            snapshot["argo/data/meta.json"] == old_meta_bytes
+            for snapshot in recovery_states[:-1]
+        ] == [True, True]
+        assert recovery_states[-1]["argo/data/meta.json"] != old_meta_bytes
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 @pytest.mark.parametrize("fail_on_put", [1, 2, 3], ids=["workflows", "runs", "meta"])
