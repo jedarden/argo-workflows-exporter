@@ -203,5 +203,47 @@
       "run_uids": ["wf-complete"],
       "unavailable_clusters": []
     }
+  },
+  "bootstrap_empty": {
+    "description": "Before the first successful cycle the prefix can be completely empty.",
+    "present_objects": [],
+    "expected": {
+      "selected": null,
+      "downloaded": ["meta.json"]
+    }
+  },
+  "bootstrap_data_only": {
+    "description": "An interrupted first upload can leave a data object without meta.json.",
+    "present_objects": ["workflows.parquet"],
+    "workflows": {
+      "generation_id": "2026-09-27T12:04:00Z-777777aaaaaa",
+      "rows": [
+        {"uid": "wf-uncommitted", "cluster": "ci", "phase": "Running", "observed_at": "2026-09-27T12:04:00Z"}
+      ]
+    },
+    "expected": {
+      "selected": null,
+      "downloaded": ["meta.json"]
+    }
+  },
+  "bootstrap_meta_only": {
+    "description": "A marker without either data object is not a published generation.",
+    "present_objects": ["meta.json"],
+    "meta": {
+      "version": "fixture",
+      "generated_at": "2026-09-27T12:05:00Z",
+      "generation_id": "2026-09-27T12:05:00Z-888888bbbbbb",
+      "poll_interval_seconds": 300,
+      "run_retention_days": 7,
+      "clusters": [
+        {"name": "ci", "ok": true, "workflows": 0}
+      ],
+      "workflows": 0,
+      "runs": 0
+    },
+    "expected": {
+      "selected": null,
+      "downloaded": ["meta.json", "workflows.parquet", "runs.parquet"]
+    }
   }
 }

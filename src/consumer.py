@@ -203,6 +203,14 @@ def read_generation(
     consumer's ``C_max`` as ``max_cycle_seconds`` to enable the freshness
     check; without it this function provides only the pairing check.
 
+    A missing ``meta.json`` with no ``last_complete`` is the normal bootstrap
+    state before the first successful exporter cycle: ``None`` means that no
+    generation has been published yet.  It is not an empty generation or a
+    storage error, and no Parquet objects are fetched or interpreted in that
+    case.  If the marker exists but either data object is missing, the same
+    no-generation result is returned when there is no prior complete
+    publication.
+
     Storage errors other than a missing object still propagate: retrying an
     unavailable store is different from silently presenting stale data, and
     the caller can decide how to report that operational failure.

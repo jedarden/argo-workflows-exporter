@@ -313,13 +313,35 @@ previous objects remain as the last published generation and
 successful cluster snapshot, so consumers that need one must archive earlier
 outputs themselves.
 
+### Before the first publication
+
+A consumer can be pointed at `DEST_S3_PREFIX` before the exporter has
+completed its first successful cycle. In that bootstrap state, `meta.json`
+may be absent, with or without leftover data objects from an interrupted
+upload. A missing `meta.json` is **not an error** and is not a valid empty
+generation: the consumer must report **no generation published yet**, return
+no current rows, and must not read or interpret any Parquet object that has no
+commit marker. Reading the marker first also means an entirely empty prefix
+and a prefix containing only an uncommitted data object have the same safe
+result.
+
+If `meta.json` is present but either Parquet object is absent, the candidate is
+also incomplete. The consumer must retain the last complete generation when
+one exists; before the first complete generation it must again report no
+generation published yet, without treating the missing object as an error.
+Only a sidecar and both Parquet files carrying the same non-empty
+`generation_id` establish a generation. A paired zero-row snapshot remains a
+valid published generation.
+
 ### Consumer contract
 
 1. Read `meta.json` before interpreting either Parquet file.
-2. Check `generated_at` using the heartbeat freshness contract above. Missing
-   or stale metadata means current data is unavailable for every cluster; emit
-   an alert and hold the prior complete generation only as last-known data,
-   never as current data.
+2. Check `generated_at` using the heartbeat freshness contract above. During
+   bootstrap, missing `meta.json` means no generation has been published yet,
+   as described above; after a prior publication, missing or stale metadata
+   means current data is unavailable for every cluster, so emit an alert and
+   hold the prior complete generation only as last-known data, never as
+   current data.
 3. **Check the generation pairing before mixing objects.** Compare
    `meta.json`'s `generation_id` with the `generation_id` in each Parquet
    file's file-level metadata (the Parquet footer alone —

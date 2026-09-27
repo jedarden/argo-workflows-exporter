@@ -192,6 +192,51 @@ def _stored_objects(publication, prefix="argo/data"):
     }
 
 
+def _stored_fixture_objects(case, prefix="argo/data"):
+    """Materialize only the objects present in an incomplete fixture."""
+    objects = {}
+    present = set(case.get("present_objects", ()))
+    if "meta.json" in present:
+        objects[f"{prefix}/meta.json"] = json.dumps(case["meta"]).encode()
+    if "workflows.parquet" in present:
+        spec = case["workflows"]
+        objects[f"{prefix}/workflows.parquet"] = parquet_io.table_to_parquet_bytes(
+            spec["rows"], parquet_io.WORKFLOWS_SCHEMA, spec["generation_id"]
+        )
+    if "runs.parquet" in present:
+        spec = case["runs"]
+        objects[f"{prefix}/runs.parquet"] = parquet_io.table_to_parquet_bytes(
+            spec["rows"], parquet_io.RUNS_SCHEMA, spec["generation_id"]
+        )
+    return objects
+
+
+@pytest.mark.parametrize(
+    "case_name", ["bootstrap_empty", "bootstrap_data_only", "bootstrap_meta_only"]
+)
+def test_read_generation_treats_bootstrap_object_sets_as_no_generation(
+    fixtures, monkeypatch, case_name
+):
+    case = fixtures[case_name]
+    objects = _stored_fixture_objects(case)
+    calls = []
+
+    def download(_s3, _bucket, key):
+        calls.append(key)
+        return objects.get(key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+
+    # There is no prior publication to retain. The incomplete object sets are
+    # a normal pre-first-publication state, not an exception or an empty
+    # snapshot.
+    selected = consumer.read_generation(object(), "bucket", "argo/data")
+
+    assert selected is None
+    assert case["expected"]["selected"] is None
+    assert calls == [f"argo/data/{name}" for name in case["expected"]["downloaded"]]
+
+
 def test_read_generation_reads_meta_first_and_returns_a_zero_row_generation(
     fixtures, monkeypatch
 ):
