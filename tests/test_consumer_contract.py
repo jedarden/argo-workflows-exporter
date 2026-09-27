@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from src import meta_schema, parquet_io
+from src import consumer, meta_schema, parquet_io
 
 
 FIXTURE_PATH = Path(__file__).with_name("fixtures") / "generation_consistency.json"
@@ -23,38 +23,19 @@ def _load_fixtures():
 
 def _materialize(case):
     """Build the three downloaded objects represented by one fixture case."""
-    return {
-        "meta": case["meta"],
-        "workflows": parquet_io.table_to_parquet_bytes(
+    return consumer.Publication(
+        meta=case["meta"],
+        workflows=parquet_io.table_to_parquet_bytes(
             case["workflows"]["rows"],
             parquet_io.WORKFLOWS_SCHEMA,
             case["workflows"]["generation_id"],
         ),
-        "runs": parquet_io.table_to_parquet_bytes(
+        runs=parquet_io.table_to_parquet_bytes(
             case["runs"]["rows"],
             parquet_io.RUNS_SCHEMA,
             case["runs"]["generation_id"],
         ),
-    }
-
-
-def _footer_generation_ids(publication):
-    """Read only the Parquet footers needed for the pairing decision."""
-    return {
-        "meta": publication["meta"]["generation_id"],
-        "workflows": parquet_io.read_generation_id(publication["workflows"]),
-        "runs": parquet_io.read_generation_id(publication["runs"]),
-    }
-
-
-def _is_complete_generation(publication):
-    ids = _footer_generation_ids(publication)
-    return ids["meta"] is not None and len(set(ids.values())) == 1
-
-
-def _select_generation(candidate, last_complete):
-    """The minimum consumer policy: reject a torn candidate, retain prior data."""
-    return candidate if _is_complete_generation(candidate) else last_complete
+    )
 
 
 @pytest.fixture(scope="module")
@@ -69,30 +50,30 @@ def test_fixture_sidecars_and_both_parquet_footers_are_executable(fixtures, case
     case = fixtures[case_name]
     publication = _materialize(case)
 
-    meta_schema.validate(publication["meta"])
-    ids = _footer_generation_ids(publication)
+    meta_schema.validate(publication.meta)
+    ids = consumer.generation_ids(publication)
     assert ids["workflows"] == case["workflows"]["generation_id"]
     assert ids["runs"] == case["runs"]["generation_id"]
-    assert _is_complete_generation(publication) is case["expected"]["accepted"]
+    assert consumer.is_complete_generation(publication) is case["expected"]["accepted"]
 
 
 def test_torn_fixture_retains_the_last_complete_generation(fixtures):
     complete = _materialize(fixtures["complete"])
     torn = _materialize(fixtures["torn"])
 
-    assert _footer_generation_ids(torn) == {
+    assert consumer.generation_ids(torn) == {
         "meta": "2026-09-27T12:00:00Z-111111aaaaaa",
         "workflows": "2026-09-27T12:01:00Z-222222bbbbbb",
         "runs": "2026-09-27T12:00:00Z-111111aaaaaa",
     }
-    selected = _select_generation(torn, complete)
+    selected = consumer.select_generation(torn, complete)
     assert selected is complete
-    assert selected["meta"]["generation_id"] == fixtures["complete"]["meta"]["generation_id"]
+    assert selected.meta["generation_id"] == fixtures["complete"]["meta"]["generation_id"]
 
     # The fallback is what a consumer presents; it must not leak the torn
     # snapshot's rows into a generation whose marker still names the old one.
     selected_rows = parquet_io.parquet_bytes_to_table(
-        selected["workflows"], parquet_io.WORKFLOWS_SCHEMA
+        selected.workflows, parquet_io.WORKFLOWS_SCHEMA
     ).to_pylist()
     assert [row["uid"] for row in selected_rows] == ["wf-complete"]
 
@@ -103,14 +84,14 @@ def test_valid_non_torn_fixtures_are_selected_and_preserve_snapshot_semantics(
 ):
     case = fixtures[case_name]
     publication = _materialize(case)
-    selected = _select_generation(publication, _materialize(fixtures["complete"]))
+    selected = consumer.select_generation(publication, _materialize(fixtures["complete"]))
 
     assert selected is publication
     workflows = parquet_io.parquet_bytes_to_table(
-        selected["workflows"], parquet_io.WORKFLOWS_SCHEMA
+        selected.workflows, parquet_io.WORKFLOWS_SCHEMA
     ).to_pylist()
     runs = parquet_io.parquet_bytes_to_table(
-        selected["runs"], parquet_io.RUNS_SCHEMA
+        selected.runs, parquet_io.RUNS_SCHEMA
     ).to_pylist()
     expected = case["expected"]
     assert [row["uid"] for row in workflows] == expected["workflow_uids"]
@@ -129,3 +110,93 @@ def test_valid_non_torn_fixtures_are_selected_and_preserve_snapshot_semantics(
         # clusters are absent from this generation's current snapshot.
         assert {row["cluster"] for row in workflows} == {"ci"}
         assert {row["cluster"] for row in runs} == {"ci", "staging"}
+
+
+def _stored_objects(publication, prefix="argo/data"):
+    return {
+        f"{prefix}/meta.json": json.dumps(publication.meta).encode(),
+        f"{prefix}/workflows.parquet": publication.workflows,
+        f"{prefix}/runs.parquet": publication.runs,
+    }
+
+
+def test_read_generation_reads_meta_first_and_returns_a_zero_row_generation(
+    fixtures, monkeypatch
+):
+    publication = _materialize(fixtures["zero_row"])
+    objects = _stored_objects(publication)
+    calls = []
+
+    def download(_s3, _bucket, key):
+        calls.append(key)
+        return objects.get(key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+
+    selected = consumer.read_generation(object(), "bucket", "argo/data")
+
+    assert selected is not None
+    assert selected.meta["generation_id"] == publication.meta["generation_id"]
+    assert selected.workflows == publication.workflows
+    assert selected.runs == publication.runs
+    assert calls == [
+        "argo/data/meta.json",
+        "argo/data/workflows.parquet",
+        "argo/data/runs.parquet",
+    ]
+    assert consumer.is_complete_generation(selected)
+    assert parquet_io.parquet_bytes_to_table(
+        selected.workflows, parquet_io.WORKFLOWS_SCHEMA
+    ).num_rows == 0
+
+
+@pytest.mark.parametrize("missing", ["meta.json", "workflows.parquet", "runs.parquet"])
+def test_read_generation_retains_the_last_complete_generation_when_an_object_is_missing(
+    fixtures, monkeypatch, missing
+):
+    previous = _materialize(fixtures["complete"])
+    objects = _stored_objects(previous)
+    objects.pop(f"argo/data/{missing}")
+    calls = []
+
+    def download(_s3, _bucket, key):
+        calls.append(key)
+        return objects.get(key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+
+    selected = consumer.read_generation(object(), "bucket", "argo/data", previous)
+
+    assert selected is previous
+    assert consumer.is_complete_generation(selected)
+    assert calls[0] == "argo/data/meta.json"
+    if missing == "meta.json":
+        assert calls == ["argo/data/meta.json"]
+    else:
+        assert calls == [
+            "argo/data/meta.json",
+            "argo/data/workflows.parquet",
+            "argo/data/runs.parquet",
+        ]
+
+
+def test_read_generation_retains_the_last_complete_generation_for_a_torn_publication(
+    fixtures, monkeypatch
+):
+    previous = _materialize(fixtures["complete"])
+    torn = _materialize(fixtures["torn"])
+    objects = _stored_objects(torn)
+
+    monkeypatch.setattr(
+        consumer.s3io,
+        "download_bytes",
+        lambda _s3, _bucket, key: objects.get(key),
+    )
+
+    selected = consumer.read_generation(object(), "bucket", "argo/data", previous)
+
+    assert selected is previous
+    assert selected.meta["generation_id"] == previous.meta["generation_id"]
+    assert parquet_io.parquet_bytes_to_table(
+        selected.workflows, parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()[0]["uid"] == "wf-complete"
