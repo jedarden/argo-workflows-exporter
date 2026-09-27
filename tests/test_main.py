@@ -458,6 +458,44 @@ def test_mixed_reachability_omits_failed_cluster_and_its_prior_rows(monkeypatch)
     assert meta["workflows"] == 1
 
 
+def test_successful_zero_row_cycle_publishes_pairable_empty_snapshot(monkeypatch):
+    """A confirmed empty listing is a generation, not an outage signal."""
+    generated_at = "2026-09-23T19:00:00Z"
+    cfg = _config([Cluster(name="ci"), Cluster(name="staging")])
+    _list(monkeypatch, {"ci": ([], True), "staging": ([], False)})
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+
+    s3 = _MemoryS3(
+        {
+            "argo/data/workflows.parquet": parquet_io.table_to_parquet_bytes(
+                [_workflow("old", "old")], parquet_io.WORKFLOWS_SCHEMA
+            )
+        }
+    )
+
+    assert main._run_cycle(cfg, s3) is True
+    assert s3.puts == 3
+
+    workflows_bytes = s3.objects["argo/data/workflows.parquet"]
+    runs_bytes = s3.objects["argo/data/runs.parquet"]
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    meta_schema.validate(meta)
+
+    snapshot = parquet_io.parquet_bytes_to_table(
+        workflows_bytes, parquet_io.WORKFLOWS_SCHEMA
+    )
+    assert snapshot.schema == parquet_io.WORKFLOWS_SCHEMA
+    assert snapshot.num_rows == 0
+    assert meta["generated_at"] == generated_at
+    assert meta["workflows"] == 0
+    assert {
+        stat["name"]: (stat["ok"], stat["workflows"])
+        for stat in meta["clusters"]
+    } == {"ci": (True, 0), "staging": (False, 0)}
+    assert _paired(meta, workflows_bytes, runs_bytes)
+    assert parquet_io.read_generation_id(workflows_bytes) == meta["generation_id"]
+
+
 def test_partial_listing_omits_the_entire_cluster_from_the_new_snapshot(monkeypatch):
     responses = {
         "ci": ([_workflow("ci-current", "ci-current")], True),
