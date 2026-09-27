@@ -355,6 +355,30 @@ def test_stale_fixture_holds_last_complete_generation_and_alerts(
     assert "freshness_threshold_seconds=360.000" in caplog.text
 
 
+def test_slow_cycle_freshness_ages_from_the_cycle_start_instant(fixtures):
+    publication = _materialize(fixtures["complete"])
+    meta = publication.meta
+    finished_at = datetime(2026, 9, 27, 12, 4, tzinfo=timezone.utc)
+
+    assert meta["generation_id"].startswith(f"{meta['generated_at']}-")
+    assert consumer.freshness_age_seconds(meta, finished_at) == 240
+    assert consumer.is_fresh(meta, finished_at, _C_MAX_SECONDS) is True
+
+
+def test_consumer_rejects_generation_id_with_a_different_timestamp_prefix(fixtures):
+    publication = _materialize(fixtures["complete"])
+    mismatched_meta = dict(publication.meta)
+    mismatched_meta["generated_at"] = "2026-09-27T12:01:00Z"
+    mismatched = consumer.Publication(
+        meta=mismatched_meta,
+        workflows=publication.workflows,
+        runs=publication.runs,
+    )
+
+    assert consumer.is_complete_generation(mismatched) is False
+    assert consumer.select_generation(mismatched, publication) is publication
+
+
 def _stored_objects(publication, prefix="argo/data"):
     return {
         f"{prefix}/meta.json": json.dumps(publication.meta).encode(),

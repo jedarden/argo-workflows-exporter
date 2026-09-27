@@ -230,7 +230,7 @@ apply the same schema to downloaded sidecars.
 | Field | Type | Constraint | Meaning |
 |---|---|---|---|
 | `version` | string | non-empty | the exporter release that wrote this generation; `"unknown"` if the VERSION file is missing, unreadable, or empty |
-| `generated_at` | string | RFC 3339 UTC, second resolution, literal `Z` (`%Y-%m-%dT%H:%M:%SZ`) | when this cycle ran — see the heartbeat note below |
+| `generated_at` | string | RFC 3339 UTC, second resolution, literal `Z` (`%Y-%m-%dT%H:%M:%SZ`) | the cycle-start instant captured before collection; see the heartbeat note below |
 | `generation_id` | string | `<generated_at>` + `-` + 12 lowercase hex | this publication's identity — see below |
 | `poll_interval_seconds` | integer | ≥ 1 | the exporter's post-cycle delay; combine it with the consumer's `C_max` to judge `generated_at` freshness |
 | `run_retention_days` | integer | ≥ 1 | the configured `RUN_RETENTION_DAYS`; how long `runs.parquet` keeps unseen runs |
@@ -245,6 +245,14 @@ Timestamps are always RFC 3339 UTC at second resolution with a literal `Z`
 suffix — never an offset, never sub-second precision, never a naive local
 time. This holds for `generated_at`, for the timestamp embedded in
 `generation_id`, and for the Parquet timestamp columns.
+
+`generated_at` is captured once, at the beginning of a cycle before any
+Kubernetes or S3 I/O. The same value is passed to row extraction and ledger
+merging, used as the `generation_id` timestamp prefix, and written to
+`meta.json` if publication commits. It is not recomputed at successful
+computation or upload completion. Thus a slow cycle's age includes its
+runtime, while a failed publication leaves the previous committed timestamp
+unchanged.
 
 **Row-count meanings.** The two counts are not parallel and must not be read
 as if they were:
@@ -261,10 +269,12 @@ as if they were:
   in a fully healthy cycle — runs persist after Argo deletes them, snapshot
   rows do not.
 
-`generated_at` doubles as the collection heartbeat: it is only written after
-at least one cluster completes its listing, so a consumer can detect a stalled
-or failing exporter by its age. `clusters[].ok` distinguishes a partial outage
-— everything else was still collected and written.
+`generated_at` doubles as the collection heartbeat: although its value is
+captured at cycle start, it is only committed after at least one cluster
+completes its listing and all three objects are published. A consumer can
+therefore detect a stalled or failing exporter by its age. `clusters[].ok`
+distinguishes a partial outage — everything else was still collected and
+written.
 
 ### Heartbeat freshness
 
@@ -276,6 +286,12 @@ effective_cadence = C_max + meta.poll_interval_seconds
 age = consumer_now - meta.generated_at
 ```
 
+The subtraction uses the committed cycle-start instant in `meta.generated_at`.
+It does not use the consumer's download time, the Parquet footer timestamp, or
+an upload completion time. The `generation_id` prefix is required to be the
+same instant, so generation pairing and freshness cannot describe different
+moments.
+
 The sidecar is **fresh** only while `age < effective_cadence`; it is **stale**
 at `age >= effective_cadence`. This is the same serial-cycle bound used for
 the observation-window calculation in
@@ -284,8 +300,9 @@ interval is the quiet time after a cycle, and `C_max` accounts for the next
 cycle's runtime. The threshold is therefore not a hardcoded number and must
 not be replaced by the exporter health endpoint's separate probe policy.
 
-A cycle in which every cluster fails the listing writes nothing, so repeated
-failed cycles leave all three objects internally consistent while freezing
+A cycle in which every cluster fails the listing, or whose publication fails,
+writes no new commit marker. Repeated failed cycles therefore leave all three
+objects internally consistent or detectably torn while freezing the committed
 `generated_at`. Generation pairing alone therefore does not establish
 currentness. When the sidecar is stale, the consumer must emit an operational
 alert containing the generation id, age, and threshold; hold the last complete
@@ -299,8 +316,10 @@ embedded in both Parquet files' file-level metadata, and all three objects of
 one cycle always carry the same id. It is what makes a torn publication —
 one of the three writes failing partway — detectable instead of silently
 misread. The embedded timestamp is the cycle's `generated_at`, so ids sort
-with time. See [Atomic publication](atomic-publication.md) for the write
-ordering, retry behavior, and the exact state each failure leaves behind.
+with the cycle-start time. A consumer must reject an id whose timestamp prefix
+disagrees with `meta.generated_at`. See [Atomic publication](atomic-publication.md)
+for the write ordering, retry behavior, and the exact state each failure
+leaves behind.
 
 ### Snapshot availability
 

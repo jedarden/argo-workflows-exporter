@@ -224,11 +224,21 @@ def _run_cycle(cfg: config.Config, s3) -> bool:
        already in place when it lands. All three carry the same
        `generation_id`, so a consumer can detect the torn set a mid-phase
        failure leaves behind and hold its previous good generation.
+
+    ``generated_at`` is captured exactly once at the start of the cycle,
+    before any collection or storage I/O. It is the instant represented by
+    the generation id prefix, the row observation timestamps, and the
+    consumer freshness heartbeat. A slow cycle therefore ages from its start
+    time; a failed cycle never advances the stored heartbeat because the old
+    ``meta.json`` remains the commit marker.
     """
     phase = "read"
     cluster_stats = []
     published = []
     try:
+        # This is deliberately the cycle-start instant, not computation or
+        # upload completion. Capture it once so every timestamp-bearing output
+        # from this cycle and the generation id refer to the same instant.
         generated_at = _now()
         # Second-resolution timestamps collide if two cycles ever run that close
         # together; the random suffix makes each publication's id its own.

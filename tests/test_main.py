@@ -1013,6 +1013,40 @@ def test_one_generation_id_across_all_three_objects(monkeypatch):
     assert {row["observed_at"] for row in snapshot.to_pylist()} == {_NEW_GENERATED_AT}
 
 
+def test_generated_at_is_captured_at_cycle_start_for_a_slow_cycle(monkeypatch):
+    """A slow collection cannot move the generation timestamp to its end."""
+    clock_phase = ["cycle-start"]
+    now_calls = []
+    fetch_timestamps = []
+    real_fetch = workflows.fetch_workflows
+
+    def cycle_now():
+        now_calls.append(clock_phase[0])
+        return _NEW_GENERATED_AT
+
+    def slow_fetch(*args):
+        fetch_timestamps.append(args[-1])
+        clock_phase[0] = "after-slow-collection"
+        return real_fetch(*args)
+
+    monkeypatch.setattr(main, "_now", cycle_now)
+    monkeypatch.setattr(workflows, "fetch_workflows", slow_fetch)
+    _list(monkeypatch, {"ci": ([_workflow("wf-slow", "wf-slow")], True)})
+    s3 = _MemoryS3()
+
+    assert main._run_cycle(_config([Cluster(name="ci")]), s3) is True
+
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    snapshot = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/workflows.parquet"], parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    assert now_calls == ["cycle-start"]
+    assert fetch_timestamps == [_NEW_GENERATED_AT]
+    assert meta["generated_at"] == _NEW_GENERATED_AT
+    assert meta["generation_id"].startswith(f"{_NEW_GENERATED_AT}-")
+    assert {row["observed_at"] for row in snapshot} == {_NEW_GENERATED_AT}
+
+
 def test_first_cycle_without_runs_parquet_publishes_a_pairable_generation(monkeypatch):
     """A missing ledger is the normal empty state on the first cycle."""
     s3 = _RecordingS3()
@@ -1425,6 +1459,23 @@ def test_failed_meta_upload_leaves_both_parquets_on_the_new_generation(monkeypat
         s3.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
     )
     assert {row["uid"] for row in runs.to_pylist()} == {"wf-old", "wf-new"}
+
+
+@pytest.mark.parametrize("fail_on_put", [1, 2, 3], ids=["workflows", "runs", "meta"])
+def test_failed_publication_does_not_advance_the_committed_timestamp(
+    monkeypatch, fail_on_put
+):
+    """Only a committed meta marker can advance the freshness heartbeat."""
+    s3 = _FailNthPut(_prior_generation(), fail_on_put=fail_on_put)
+    old_meta = json.loads(s3.objects["argo/data/meta.json"])
+
+    with pytest.raises(ClientError):
+        _one_cluster_state(monkeypatch, s3)
+
+    stored_meta = json.loads(s3.objects["argo/data/meta.json"])
+    assert stored_meta["generated_at"] == _GENERATED_AT
+    assert stored_meta["generation_id"].startswith(f"{_GENERATED_AT}-")
+    assert stored_meta == old_meta
 
 
 @pytest.mark.parametrize(

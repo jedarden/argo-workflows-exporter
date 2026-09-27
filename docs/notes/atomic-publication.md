@@ -24,6 +24,24 @@ suffix exists because `generated_at` has only second resolution and the poll
 interval is operator-configured — two cycles that ever land in the same
 second must still be distinguishable.
 
+### Timestamp semantics
+
+`generated_at` is the cycle-start instant. The exporter captures it once,
+before the first Kubernetes or S3 operation, and reuses that exact UTC
+second-resolution value for the `generation_id` prefix, every row's
+`observed_at`/`last_seen_at`, and the sidecar heartbeat. It is not the time
+computation finishes and not the time an upload request returns. This keeps
+all timestamps in one generation comparable even when collection or
+serialization is slow.
+
+The timestamp becomes visible only when the `meta.json` commit marker is
+successfully uploaded. A read or compute failure writes no object; a failed
+data or marker upload leaves the previous sidecar's `generated_at` in place.
+If a failed upload leaves newer Parquet objects beside that marker, their
+newer id prefix is a torn-publication signal, not a new heartbeat. Consumers
+calculate age from the committed sidecar `generated_at`, with the generation
+id prefix required to match it.
+
 All three objects of a cycle carry the same id:
 
 - `workflows.parquet` and `runs.parquet` — as file-level Parquet
@@ -68,6 +86,11 @@ it describes — row counts, per-cluster reachability, generation id — is
 already in place. Advancing the marker last is the closest thing to a commit
 S3 offers: before it, a partial publication is invisible to a consumer that
 trusts `meta.json`; after it, the generation is complete.
+
+Because the timestamp is captured at cycle start, a slow but successful cycle
+is intentionally published with a non-zero heartbeat age. The consumer's
+`C_max` must cover the complete cycle runtime; the effective cadence remains
+`C_max + meta.poll_interval_seconds`.
 
 Within the data objects the order is fixed and tested:
 `workflows.parquet`, `runs.parquet`, `meta.json`.

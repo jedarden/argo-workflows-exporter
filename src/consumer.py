@@ -187,7 +187,19 @@ def is_complete_generation(
 
     ids = generation_ids(publication)
     values = tuple(ids.values())
-    return all(value is not None for value in values) and len(set(values)) == 1
+    if not all(value is not None for value in values) or len(set(values)) != 1:
+        return False
+
+    # ``read_generation`` schema-validates the sidecar, but callers may use
+    # this helper directly with an in-memory publication. When generated_at
+    # is present, require the same timestamp to name the generation id and
+    # the freshness heartbeat. Legacy schema-only fixtures omit generated_at
+    # and remain pairable for their explicit migration use case.
+    meta = _publication_value(publication, "meta")
+    generated_at = meta.get("generated_at") if isinstance(meta, Mapping) else None
+    if generated_at is not None:
+        return isinstance(generated_at, str) and values[0].startswith(f"{generated_at}-")
+    return True
 
 
 def select_generation(
@@ -207,11 +219,7 @@ def select_generation(
     """
 
     ids = generation_ids(candidate) if candidate is not None else None
-    if (
-        ids is None
-        or not all(value is not None for value in ids.values())
-        or len(set(ids.values())) != 1
-    ):
+    if ids is None or not is_complete_generation(candidate):
         if ids is not None and len(set(ids.values())) > 1:
             log.warning(
                 "rejecting inconsistent publication generation ids: "

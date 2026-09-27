@@ -74,6 +74,12 @@ upper bound for one exporter cycle. It must alert, retain the last complete
 generation as last-known data, and never present that retained generation as
 current; generation-id agreement alone does not make a frozen heartbeat fresh.
 
+`generated_at` is captured once at cycle start in UTC RFC 3339 second-resolution
+form and reused as the `generation_id` timestamp prefix and row observation
+instant. It is committed only when the final `meta.json` upload succeeds, so a
+slow cycle's runtime contributes to age and a failed publication cannot advance
+the consumer heartbeat.
+
 ## Access required
 
 Read-only, on every cluster polled:
