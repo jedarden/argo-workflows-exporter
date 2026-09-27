@@ -1,6 +1,7 @@
 import http.client
 import io
 import json
+import logging
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -860,6 +861,53 @@ def test_poll_loop_logs_cycle_failure_and_continues_at_the_configured_interval(
     assert health.successes == 1
     assert "cycle failed, will retry next interval" in caplog.text
     assert "injected cycle failure" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("log_level", "cycle_failure_is_logged"),
+    [("ERROR", True), ("CRITICAL", False)],
+)
+def test_configured_log_level_controls_cycle_failure_logging(
+    monkeypatch, caplog, log_level, cycle_failure_is_logged
+):
+    cfg = replace(_config([Cluster(name="ci")]), log_level=log_level)
+    monkeypatch.setattr(main.config, "load", lambda: cfg)
+    monkeypatch.setattr(main.s3io, "client", lambda _endpoint: object())
+    monkeypatch.setattr(main, "_serve_health", lambda _port, _state: None)
+    monkeypatch.setattr(main, "_stop_health", lambda _server: None)
+    real_poll_loop = main._run_poll_loop
+
+    def run_one_cycle_then_stop(_cfg, _s3, _stop, health):
+        class Stop:
+            def __init__(self):
+                self.stopped = False
+
+            def is_set(self):
+                return self.stopped
+
+            def wait(self, _interval):
+                self.stopped = True
+                return True
+
+        def failed_cycle(_cfg, _s3):
+            raise RuntimeError("injected cycle failure")
+
+        monkeypatch.setattr(main, "_run_cycle", failed_cycle)
+        real_poll_loop(cfg, object(), Stop(), health)
+
+    monkeypatch.setattr(main, "_run_poll_loop", run_one_cycle_then_stop)
+    with caplog.at_level(logging.NOTSET):
+        main.main()
+
+    failure_records = [
+        record
+        for record in caplog.records
+        if record.name == "src.main"
+        and "cycle failed, will retry next interval" in record.getMessage()
+    ]
+    assert bool(failure_records) is cycle_failure_is_logged
+    if cycle_failure_is_logged:
+        assert str(failure_records[0].exc_info[1]) == "injected cycle failure"
 
 
 def test_failed_read_cycle_logs_clusters_phase_and_skipped_publication(monkeypatch, caplog):

@@ -127,7 +127,15 @@ def test_log_level_defaults_to_info(monkeypatch):
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [("debug", "DEBUG"), ("WARNING", "WARNING"), ("warn", "WARNING"), ("fatal", "CRITICAL")],
+    [
+        ("dEbUg", "DEBUG"),
+        ("iNfO", "INFO"),
+        ("WaRnInG", "WARNING"),
+        ("eRrOr", "ERROR"),
+        ("cRiTiCaL", "CRITICAL"),
+        ("wArN", "WARNING"),
+        ("fAtAl", "CRITICAL"),
+    ],
 )
 def test_log_level_is_normalized(monkeypatch, raw, expected):
     _env(
@@ -146,6 +154,20 @@ def test_invalid_log_level_fails_fast(monkeypatch):
     )
     with pytest.raises(ConfigError, match="LOG_LEVEL"):
         load()
+
+
+def test_invalid_log_level_fails_during_startup(monkeypatch, capsys):
+    _env(
+        monkeypatch,
+        '[{"name": "ci", "base_url": "http://p:8001"}]',
+        LOG_LEVEL="trace",
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        main.main()
+
+    assert raised.value.code == 1
+    assert "config error: LOG_LEVEL must be one of" in capsys.readouterr().err
 
 
 def test_s3_addressing_style_can_be_overridden(monkeypatch):
