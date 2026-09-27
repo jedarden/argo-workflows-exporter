@@ -852,6 +852,95 @@ def test_failed_serialization_preserves_the_previous_committed_generation(monkey
 
 
 @pytest.mark.parametrize(
+    ("failure", "expected_phase"),
+    [
+        pytest.param("collection", "read", id="cluster-collection"),
+        pytest.param("ledger", "compute", id="ledger-folding"),
+        pytest.param("parquet", "compute", id="parquet-serialization"),
+        pytest.param("meta", "compute", id="meta-serialization"),
+    ],
+)
+def test_pre_publish_cycle_failures_preserve_and_then_recover(
+    monkeypatch, failure, expected_phase
+):
+    """Read/compute failures leave the prior generation available to retry."""
+    cfg = _config([Cluster(name="ci")])
+    s3 = _MemoryS3(_prior_generation())
+    before = dict(s3.objects)
+    _list(monkeypatch, {"ci": ([_workflow("wf-new", "wf-new")], True)})
+    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: _GENERATED_AT)
+    enabled = True
+
+    if failure == "collection":
+        real_fetch = workflows.fetch_workflows
+
+        def fail_collection(*args, **kwargs):
+            if enabled:
+                raise RuntimeError("injected cluster collection failure")
+            return real_fetch(*args, **kwargs)
+
+        monkeypatch.setattr(workflows, "fetch_workflows", fail_collection)
+        message = "injected cluster collection failure"
+    elif failure == "ledger":
+        real_merge = ledger.merge
+
+        def fail_ledger(*args, **kwargs):
+            if enabled:
+                raise RuntimeError("injected ledger folding failure")
+            return real_merge(*args, **kwargs)
+
+        monkeypatch.setattr(ledger, "merge", fail_ledger)
+        message = "injected ledger folding failure"
+    elif failure == "parquet":
+        real_serialize = parquet_io.table_to_parquet_bytes
+
+        def fail_parquet(*args, **kwargs):
+            if enabled:
+                raise RuntimeError("injected Parquet serialization failure")
+            return real_serialize(*args, **kwargs)
+
+        monkeypatch.setattr(parquet_io, "table_to_parquet_bytes", fail_parquet)
+        message = "injected Parquet serialization failure"
+    else:
+        real_json_dumps = main.json.dumps
+
+        def fail_meta(value, *args, **kwargs):
+            if enabled:
+                raise RuntimeError("injected meta serialization failure")
+            return real_json_dumps(value, *args, **kwargs)
+
+        monkeypatch.setattr(main.json, "dumps", fail_meta)
+        message = "injected meta serialization failure"
+
+    with pytest.raises(RuntimeError, match=message) as raised:
+        main._run_cycle(cfg, s3)
+
+    assert raised.value.cycle_failure_phase == expected_phase
+    assert s3.puts == 0
+    for key in main._PUBLICATION_OBJECTS:
+        assert s3.objects[f"argo/data/{key}"] == before[f"argo/data/{key}"]
+
+    enabled = False
+    monkeypatch.setattr(main, "_now", lambda: _NEW_GENERATED_AT)
+    assert main._run_cycle(cfg, s3) is True
+
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    meta_schema.validate(meta)
+    assert meta["generated_at"] == _NEW_GENERATED_AT
+    assert meta["generation_id"] != json.loads(before["argo/data/meta.json"])["generation_id"]
+    assert _paired(
+        meta,
+        s3.objects["argo/data/workflows.parquet"],
+        s3.objects["argo/data/runs.parquet"],
+    )
+    assert s3.puts == 3
+    assert {
+        s3.objects[f"argo/data/{key}"] != before[f"argo/data/{key}"]
+        for key in main._PUBLICATION_OBJECTS
+    } == {True}
+
+
+@pytest.mark.parametrize(
     ("rows", "expected_workflows", "expected_runs"),
     [
         pytest.param(
