@@ -191,6 +191,63 @@ def test_missing_required_variables_fail_fast(monkeypatch, name, value):
         load()
 
 
+_STARTUP_INVALID_CONFIGS = [
+    *[
+        pytest.param(name, None, id=f"missing-{name.lower()}")
+        for name in _REQUIRED
+    ],
+    pytest.param("CLUSTERS_JSON", "not-json", id="malformed-clusters-json"),
+    pytest.param(
+        "DEST_S3_ADDRESSING_STYLE", "bucket-host", id="invalid-s3-addressing-style"
+    ),
+    pytest.param("LOG_LEVEL", "verbose", id="invalid-log-level"),
+    *[
+        pytest.param(name, "not-an-integer", id=f"malformed-{name.lower()}")
+        for name in _NUMERIC
+    ],
+    *[
+        pytest.param(name, "0", id=f"non-positive-{name.lower()}")
+        for name in _NUMERIC
+    ],
+]
+
+
+@pytest.mark.parametrize(("name", "value"), _STARTUP_INVALID_CONFIGS)
+def test_invalid_configuration_fails_before_any_startup_component(
+    monkeypatch, capsys, name, value
+):
+    """Invalid configuration must stop startup before any runtime component begins."""
+    _env(monkeypatch, '[{"name": "ci", "base_url": "http://p:8001"}]')
+    if value is None:
+        monkeypatch.delenv(name)
+    else:
+        monkeypatch.setenv(name, value)
+
+    started = []
+    monkeypatch.setattr(
+        main,
+        "_serve_health",
+        lambda *args, **kwargs: started.append("health"),
+    )
+    monkeypatch.setattr(
+        main.s3io,
+        "client",
+        lambda *args, **kwargs: started.append("s3"),
+    )
+    monkeypatch.setattr(
+        main,
+        "_run_poll_loop",
+        lambda *args, **kwargs: started.append("poll"),
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        main.main()
+
+    assert raised.value.code == 1
+    assert started == []
+    assert f"config error:" in capsys.readouterr().err
+
+
 def test_s3_defaults_are_applied(monkeypatch):
     _env(monkeypatch, '[{"name": "ci", "base_url": "http://p:8001"}]')
     cfg = load()
