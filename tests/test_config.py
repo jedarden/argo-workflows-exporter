@@ -179,6 +179,32 @@ def test_s3_addressing_style_can_be_overridden(monkeypatch):
     assert load().dest.addressing_style == "path"
 
 
+def test_s3_region_can_be_overridden(monkeypatch):
+    _env(
+        monkeypatch,
+        '[{"name": "ci", "base_url": "http://p:8001"}]',
+        DEST_S3_REGION="eu-west-2",
+    )
+    assert load().dest.region == "eu-west-2"
+
+
+def test_invalid_s3_addressing_style_fails_during_startup(monkeypatch, capsys):
+    _env(
+        monkeypatch,
+        '[{"name": "ci", "base_url": "http://p:8001"}]',
+        DEST_S3_ADDRESSING_STYLE="bucket-host",
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        main.main()
+
+    assert raised.value.code == 1
+    assert (
+        "config error: DEST_S3_ADDRESSING_STYLE must be one of auto, virtual, path"
+        in capsys.readouterr().err
+    )
+
+
 def test_trailing_slash_is_stripped_from_the_prefix(monkeypatch):
     _env(monkeypatch, '[{"name": "ci", "base_url": "http://p:8001"}]', DEST_S3_PREFIX="argo/data/")
     assert load().dest_prefix == "argo/data"

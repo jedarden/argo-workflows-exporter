@@ -18,6 +18,8 @@ _LOG_LEVEL_ALIASES = {
     "NOTSET": "NOTSET",
 }
 
+_S3_ADDRESSING_STYLES = ("auto", "virtual", "path")
+
 
 def _require(name):
     value = os.environ.get(name, "").strip()
@@ -132,6 +134,16 @@ def _log_level():
         raise ConfigError(f"LOG_LEVEL must be one of {allowed}, got {raw!r}")
 
 
+def _s3_addressing_style():
+    raw = _optional("DEST_S3_ADDRESSING_STYLE", "virtual")
+    if raw not in _S3_ADDRESSING_STYLES:
+        allowed = ", ".join(_S3_ADDRESSING_STYLES)
+        raise ConfigError(
+            f"DEST_S3_ADDRESSING_STYLE must be one of {allowed}, got {raw!r}"
+        )
+    return raw
+
+
 def load() -> Config:
     clusters = _parse_clusters(_require("CLUSTERS_JSON"))
 
@@ -140,7 +152,7 @@ def load() -> Config:
         access_key_id=_require("DEST_S3_ACCESS_KEY_ID"),
         secret_access_key=_require("DEST_S3_SECRET_ACCESS_KEY"),
         bucket=_require("DEST_S3_BUCKET"),
-        addressing_style=_optional("DEST_S3_ADDRESSING_STYLE", "virtual"),
+        addressing_style=_s3_addressing_style(),
         region=_optional("DEST_S3_REGION", "us-east-1"),
     )
 

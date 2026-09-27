@@ -49,7 +49,7 @@ ServiceAccount, and there is only one of those.
 | `DEST_S3_SECRET_ACCESS_KEY` | yes | — | |
 | `DEST_S3_BUCKET` | yes | — | |
 | `DEST_S3_PREFIX` | no | `argo/data` | key prefix for all three output objects |
-| `DEST_S3_ADDRESSING_STYLE` | no | `virtual` | set `path` for S3-compatible stores that have no per-bucket virtual-host DNS, where the default `bucket.endpoint` form redirects |
+| `DEST_S3_ADDRESSING_STYLE` | no | `virtual` | `auto`, `virtual`, or `path`; set `path` for S3-compatible stores that have no per-bucket virtual-host DNS, where the default `bucket.endpoint` form redirects; other values fail fast at startup |
 | `DEST_S3_REGION` | no | `us-east-1` | |
 
 ## Behavior
