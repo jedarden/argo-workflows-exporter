@@ -645,22 +645,73 @@ def test_failed_serialization_preserves_the_previous_committed_generation(monkey
     assert s3.puts == 0
 
 
-def test_two_cycles_in_the_same_second_get_distinct_generation_ids(monkeypatch):
+@pytest.mark.parametrize(
+    ("rows", "expected_workflows", "expected_runs"),
+    [
+        pytest.param(
+            [_workflow("wf-new", "wf-new")],
+            1,
+            1,
+            id="identical-non-empty-rows",
+        ),
+        pytest.param([], 0, 0, id="identical-zero-row-generations"),
+    ],
+)
+def test_two_cycles_in_the_same_second_get_distinct_generation_ids(
+    monkeypatch, rows, expected_workflows, expected_runs
+):
     """generated_at has second resolution and the poll interval is operator
     configured; the random suffix is what keeps two cycles that do land in
-    the same second from being mistaken for one generation."""
+    the same second from being mistaken for one generation. This remains true
+    when the two snapshots contain the same rows, including empty snapshots.
+    """
     monkeypatch.setattr(main, "_now", lambda: _GENERATED_AT)
     s3 = _MemoryS3()
     cfg = _config([Cluster(name="ci")])
-    _list(monkeypatch, {"ci": ([_workflow("wf-new", "wf-new")], True)})
+    _list(monkeypatch, {"ci": (rows, True)})
 
-    main._run_cycle(cfg, s3)
-    first = json.loads(s3.objects["argo/data/meta.json"])["generation_id"]
-    main._run_cycle(cfg, s3)
-    second = json.loads(s3.objects["argo/data/meta.json"])["generation_id"]
+    assert main._run_cycle(cfg, s3) is True
+    first_meta = json.loads(s3.objects["argo/data/meta.json"])
+    first_workflows = s3.objects["argo/data/workflows.parquet"]
+    first_runs = s3.objects["argo/data/runs.parquet"]
 
-    assert first != second
-    assert parquet_io.read_generation_id(s3.objects["argo/data/runs.parquet"]) == second
+    assert main._run_cycle(cfg, s3) is True
+    second_meta = json.loads(s3.objects["argo/data/meta.json"])
+    second_workflows = s3.objects["argo/data/workflows.parquet"]
+    second_runs = s3.objects["argo/data/runs.parquet"]
+
+    assert first_meta["generated_at"] == second_meta["generated_at"] == _GENERATED_AT
+    assert first_meta["generation_id"] != second_meta["generation_id"]
+    assert first_meta["workflows"] == second_meta["workflows"] == expected_workflows
+    assert first_meta["runs"] == second_meta["runs"] == expected_runs
+    assert first_meta["clusters"] == second_meta["clusters"] == [
+        {"name": "ci", "ok": True, "workflows": expected_workflows}
+    ]
+    meta_schema.validate(first_meta)
+    meta_schema.validate(second_meta)
+
+    assert _paired(first_meta, first_workflows, first_runs)
+    assert _paired(second_meta, second_workflows, second_runs)
+    assert parquet_io.read_generation_id(first_workflows) == first_meta["generation_id"]
+    assert parquet_io.read_generation_id(first_runs) == first_meta["generation_id"]
+    assert parquet_io.read_generation_id(second_workflows) == second_meta["generation_id"]
+    assert parquet_io.read_generation_id(second_runs) == second_meta["generation_id"]
+
+    first_workflows_table = parquet_io.parquet_bytes_to_table(
+        first_workflows, parquet_io.WORKFLOWS_SCHEMA
+    )
+    second_workflows_table = parquet_io.parquet_bytes_to_table(
+        second_workflows, parquet_io.WORKFLOWS_SCHEMA
+    )
+    first_runs_table = parquet_io.parquet_bytes_to_table(first_runs, parquet_io.RUNS_SCHEMA)
+    second_runs_table = parquet_io.parquet_bytes_to_table(second_runs, parquet_io.RUNS_SCHEMA)
+    assert first_workflows_table.schema == second_workflows_table.schema == parquet_io.WORKFLOWS_SCHEMA
+    assert first_runs_table.schema == second_runs_table.schema == parquet_io.RUNS_SCHEMA
+    assert first_workflows_table.num_rows == second_workflows_table.num_rows == expected_workflows
+    assert first_runs_table.num_rows == second_runs_table.num_rows == expected_runs
+    assert first_workflows_table.to_pylist() == second_workflows_table.to_pylist()
+    assert first_runs_table.to_pylist() == second_runs_table.to_pylist()
+
 
 
 def test_failed_workflows_upload_leaves_the_stored_generation_untouched(monkeypatch):
