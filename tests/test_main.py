@@ -62,6 +62,18 @@ class _FailGet(_MemoryS3):
         )
 
 
+class _RecordingS3(_MemoryS3):
+    """Records object order while retaining the in-memory S3 behavior."""
+
+    def __init__(self, objects=None):
+        super().__init__(objects)
+        self.uploaded_keys = []
+
+    def put_object(self, Bucket, Key, Body, ContentType):
+        self.uploaded_keys.append(Key)
+        super().put_object(Bucket, Key, Body, ContentType)
+
+
 def _config(clusters):
     return Config(
         clusters=clusters,
@@ -579,6 +591,60 @@ def test_one_generation_id_across_all_three_objects(monkeypatch):
     assert {row["observed_at"] for row in snapshot.to_pylist()} == {_NEW_GENERATED_AT}
 
 
+def test_first_cycle_without_runs_parquet_publishes_a_pairable_generation(monkeypatch):
+    """A missing ledger is the normal empty state on the first cycle."""
+    s3 = _RecordingS3()
+
+    assert _one_cluster_state(monkeypatch, s3) is True
+
+    assert s3.uploaded_keys == [
+        "argo/data/workflows.parquet",
+        "argo/data/runs.parquet",
+        "argo/data/meta.json",
+    ]
+    runs = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
+    )
+    assert [row["uid"] for row in runs.to_pylist()] == ["wf-new"]
+
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    assert meta["runs"] == 1
+    assert _paired(
+        meta,
+        s3.objects["argo/data/workflows.parquet"],
+        s3.objects["argo/data/runs.parquet"],
+    )
+
+
+def test_failed_listing_preserves_the_previous_committed_generation(monkeypatch):
+    s3 = _MemoryS3(_prior_generation())
+    before = dict(s3.objects)
+    _list(monkeypatch, {"ci": ([], False)})
+
+    assert main._run_cycle(_config([Cluster(name="ci")]), s3) is False
+
+    assert s3.objects == before
+    assert s3.puts == 0
+
+
+def test_failed_serialization_preserves_the_previous_committed_generation(monkeypatch):
+    s3 = _MemoryS3(_prior_generation())
+    before = dict(s3.objects)
+    _list(monkeypatch, {"ci": ([_workflow("wf-new", "wf-new")], True)})
+
+    def fail_serialization(*_args, **_kwargs):
+        raise RuntimeError("injected serialization failure")
+
+    monkeypatch.setattr(main.parquet_io, "table_to_parquet_bytes", fail_serialization)
+
+    with pytest.raises(RuntimeError, match="injected serialization failure") as raised:
+        _one_cluster_state(monkeypatch, s3)
+
+    assert raised.value.cycle_failure_phase == "compute"
+    assert s3.objects == before
+    assert s3.puts == 0
+
+
 def test_two_cycles_in_the_same_second_get_distinct_generation_ids(monkeypatch):
     """generated_at has second resolution and the poll interval is operator
     configured; the random suffix is what keeps two cycles that do land in
@@ -648,12 +714,13 @@ def test_failed_meta_upload_leaves_both_parquets_on_the_new_generation(monkeypat
 
 
 def test_failed_ledger_download_writes_nothing_at_all(monkeypatch):
-    s3 = _FailGet()
+    s3 = _FailGet(_prior_generation())
+    before = dict(s3.objects)
 
     with pytest.raises(ClientError):
         _one_cluster_state(monkeypatch, s3)
 
-    assert s3.objects == {}
+    assert s3.objects == before
     assert s3.puts == 0
 
 
