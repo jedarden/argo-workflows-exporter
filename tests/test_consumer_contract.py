@@ -387,6 +387,137 @@ def _stored_objects(publication, prefix="argo/data"):
     }
 
 
+def _encoded_meta(meta, **changes):
+    candidate = dict(meta)
+    candidate.update(changes)
+    return json.dumps(candidate).encode()
+
+
+def _encoded_meta_without(meta, field):
+    candidate = dict(meta)
+    candidate.pop(field)
+    return json.dumps(candidate).encode()
+
+
+@pytest.mark.parametrize(
+    "malformed_meta",
+    [
+        pytest.param(lambda meta: b'{"generated_at":', id="invalid-json"),
+        pytest.param(
+            lambda meta: _encoded_meta_without(meta, "version"),
+            id="missing-version",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta_without(meta, "generated_at"),
+            id="missing-generated-at",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta_without(meta, "generation_id"),
+            id="missing-generation-id",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta_without(meta, "poll_interval_seconds"),
+            id="missing-poll-interval",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta_without(meta, "clusters"),
+            id="missing-clusters",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta(meta, generated_at="2026-09-27 12:00:00"),
+            id="generated-at-wrong-format",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta(meta, generated_at="2026-02-30T12:00:00Z"),
+            id="generated-at-impossible-date",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta(meta, generated_at="2026-09-27T12:00:00+00:00"),
+            id="generated-at-offset",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta(meta, version=7),
+            id="version-wrong-type",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta(meta, poll_interval_seconds="60"),
+            id="poll-interval-wrong-type",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta(meta, clusters={"ci": True}),
+            id="clusters-wrong-type",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta(meta, generation_id="not-a-generation-id"),
+            id="generation-id-wrong-shape",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta(
+                meta, generation_id="2026-09-27T12:00:00Z-ABCDEF123456"
+            ),
+            id="generation-id-uppercase-suffix",
+        ),
+        pytest.param(
+            lambda meta: _encoded_meta(
+                meta, generation_id="2026-09-27T12:01:00Z-abcdef123456"
+            ),
+            id="generation-id-timestamp-mismatch",
+        ),
+    ],
+)
+def test_read_generation_rejects_malformed_meta_and_holds_last_complete_generation(
+    fixtures, monkeypatch, malformed_meta
+):
+    previous = _materialize(fixtures["complete"])
+    objects = _stored_objects(previous)
+    objects["argo/data/meta.json"] = malformed_meta(previous.meta)
+    calls = []
+
+    def download(_s3, _bucket, key):
+        calls.append(key)
+        return objects.get(key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+
+    selected = consumer.read_generation(
+        object(),
+        "bucket",
+        "argo/data",
+        previous,
+        max_cycle_seconds=_C_MAX_SECONDS,
+        now=datetime(2026, 9, 27, 12, 1, tzinfo=timezone.utc),
+    )
+
+    assert selected is previous
+    assert calls == ["argo/data/meta.json"]
+
+
+def test_read_generation_rejects_malformed_meta_before_first_generation(
+    fixtures, monkeypatch
+):
+    valid = _materialize(fixtures["complete"])
+    objects = _stored_objects(valid)
+    objects["argo/data/meta.json"] = b"not-json"
+    calls = []
+
+    def download(_s3, _bucket, key):
+        calls.append(key)
+        return objects.get(key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+
+    selected = consumer.read_generation(
+        object(),
+        "bucket",
+        "argo/data",
+        max_cycle_seconds=_C_MAX_SECONDS,
+        now=datetime(2026, 9, 27, 12, 1, tzinfo=timezone.utc),
+    )
+
+    assert selected is None
+    assert calls == ["argo/data/meta.json"]
+
+
 def _stored_fixture_objects(case, prefix="argo/data"):
     """Materialize only the objects present in an incomplete fixture."""
     objects = {}
