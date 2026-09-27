@@ -121,6 +121,44 @@ def _publication_value(
     return getattr(publication, name, None)
 
 
+def cluster_availability(
+    publication: Publication | Mapping[str, Any],
+) -> dict[str, bool]:
+    """Return the current snapshot availability for every cluster.
+
+    ``ok: false`` means that no current snapshot was obtained for the
+    cluster.  It is deliberately kept separate from the cluster's included
+    workflow count: a failed cluster reports zero included rows, but that
+    zero is not confirmation that the cluster is empty and must not be used
+    to delete a consumer's last-known rows.  The sidecar has already been
+    schema-validated when it came through :func:`read_generation`; callers
+    using a hand-built publication get a clear error for malformed cluster
+    metadata instead of a misleading status map.
+    """
+
+    meta = _publication_value(publication, "meta")
+    if not isinstance(meta, Mapping):
+        raise ValueError("publication.meta must be a mapping")
+    clusters = meta.get("clusters")
+    if not isinstance(clusters, list):
+        raise ValueError("publication.meta.clusters must be a list")
+
+    availability = {}
+    for index, cluster in enumerate(clusters):
+        if not isinstance(cluster, Mapping):
+            raise ValueError(f"publication.meta.clusters[{index}] must be a mapping")
+        name = cluster.get("name")
+        ok = cluster.get("ok")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"publication.meta.clusters[{index}].name must be non-empty")
+        if not isinstance(ok, bool):
+            raise ValueError(f"publication.meta.clusters[{index}].ok must be a boolean")
+        if name in availability:
+            raise ValueError(f"publication.meta.clusters contains duplicate name {name!r}")
+        availability[name] = ok
+    return availability
+
+
 def _footer_generation_id(data: bytes | None) -> str | None:
     if data is None:
         return None

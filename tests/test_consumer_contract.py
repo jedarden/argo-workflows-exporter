@@ -48,7 +48,17 @@ def fixtures():
 
 @pytest.mark.parametrize(
     "case_name",
-    ["complete", "torn", "zero_row", "failed_clusters", "stale", "pre_generation_id"],
+    [
+        "complete",
+        "torn",
+        "zero_row",
+        "failed_clusters",
+        "unreachable_cluster",
+        "partial_pagination_failure",
+        "recovered_cluster",
+        "stale",
+        "pre_generation_id",
+    ],
 )
 def test_fixture_sidecars_and_both_parquet_footers_are_executable(fixtures, case_name):
     case = fixtures[case_name]
@@ -94,7 +104,16 @@ def test_torn_fixture_retains_the_last_complete_generation(fixtures):
     assert [row["uid"] for row in selected_rows] == ["wf-complete"]
 
 
-@pytest.mark.parametrize("case_name", ["zero_row", "failed_clusters"])
+@pytest.mark.parametrize(
+    "case_name",
+    [
+        "zero_row",
+        "failed_clusters",
+        "unreachable_cluster",
+        "partial_pagination_failure",
+        "recovered_cluster",
+    ],
+)
 def test_valid_non_torn_fixtures_are_selected_and_preserve_snapshot_semantics(
     fixtures, case_name
 ):
@@ -112,20 +131,57 @@ def test_valid_non_torn_fixtures_are_selected_and_preserve_snapshot_semantics(
     expected = case["expected"]
     assert [row["uid"] for row in workflows] == expected["workflow_uids"]
     assert [row["uid"] for row in runs] == expected["run_uids"]
+    assert consumer.cluster_availability(publication) == expected["cluster_availability"]
     assert {
-        cluster["name"]
-        for cluster in case["meta"]["clusters"]
-        if not cluster["ok"]
+        name for name, available in consumer.cluster_availability(publication).items() if not available
     } == set(expected["unavailable_clusters"])
+    assert {row["cluster"] for row in workflows} == set(expected["workflow_clusters"])
+    assert {row["cluster"] for row in runs} == set(expected["run_clusters"])
 
     if case_name == "zero_row":
         assert workflows == []
         assert runs == []
-    else:
-        # Failed-cluster history remains in runs.parquet, but unavailable
-        # clusters are absent from this generation's current snapshot.
-        assert {row["cluster"] for row in workflows} == {"ci"}
-        assert {row["cluster"] for row in runs} == {"ci", "staging"}
+
+
+@pytest.mark.parametrize("case_name", ["unreachable_cluster", "partial_pagination_failure"])
+def test_failed_cluster_zero_count_is_unavailable_not_empty_or_deleted(fixtures, case_name):
+    publication = _materialize(fixtures[case_name])
+    expected = fixtures[case_name]["expected"]
+
+    assert expected["unavailable_clusters"] == ["staging"]
+    assert consumer.cluster_availability(publication)["staging"] is False
+    assert next(
+        cluster["workflows"]
+        for cluster in publication.meta["clusters"]
+        if cluster["name"] == "staging"
+    ) == 0
+
+    workflows = parquet_io.parquet_bytes_to_table(
+        publication.workflows, parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    runs = parquet_io.parquet_bytes_to_table(
+        publication.runs, parquet_io.RUNS_SCHEMA
+    ).to_pylist()
+    assert all(row["cluster"] != "staging" for row in workflows)
+    assert any(row["cluster"] == "staging" for row in runs)
+
+
+def test_failed_cluster_recovers_in_a_later_generation(fixtures):
+    failed = _materialize(fixtures["partial_pagination_failure"])
+    recovered = _materialize(fixtures["recovered_cluster"])
+
+    assert consumer.select_generation(recovered, failed) is recovered
+    assert consumer.cluster_availability(failed)["staging"] is False
+    assert consumer.cluster_availability(recovered)["staging"] is True
+
+    workflows = parquet_io.parquet_bytes_to_table(
+        recovered.workflows, parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    assert {row["cluster"] for row in workflows} == {"ci", "staging"}
+    assert {row["uid"] for row in workflows} == {
+        "wf-ci-recovered",
+        "wf-staging-recovered",
+    }
 
 
 def test_stale_fixture_is_complete_but_fails_the_effective_cadence_policy(fixtures):

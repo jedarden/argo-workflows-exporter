@@ -30,6 +30,9 @@
       "selected": "complete",
       "workflow_uids": ["wf-complete"],
       "run_uids": ["wf-complete"],
+      "workflow_clusters": ["ci"],
+      "run_clusters": ["ci"],
+      "cluster_availability": {"ci": true},
       "unavailable_clusters": []
     }
   },
@@ -95,6 +98,9 @@
       "selected": "zero_row",
       "workflow_uids": [],
       "run_uids": [],
+      "workflow_clusters": [],
+      "run_clusters": [],
+      "cluster_availability": {"ci": true},
       "unavailable_clusters": []
     }
   },
@@ -131,7 +137,129 @@
       "selected": "failed_clusters",
       "workflow_uids": ["wf-ci"],
       "run_uids": ["wf-ci", "wf-staging-old"],
+      "workflow_clusters": ["ci"],
+      "run_clusters": ["ci", "staging"],
+      "cluster_availability": {"ci": true, "staging": false},
       "unavailable_clusters": ["staging"]
+    }
+  },
+  "unreachable_cluster": {
+    "description": "A cluster that cannot be reached is unavailable, not an empty or deleted cluster.",
+    "meta": {
+      "version": "fixture",
+      "generated_at": "2026-09-27T12:06:00Z",
+      "generation_id": "2026-09-27T12:06:00Z-999999aaaaaa",
+      "poll_interval_seconds": 300,
+      "run_retention_days": 7,
+      "clusters": [
+        {"name": "ci", "ok": true, "workflows": 1},
+        {"name": "staging", "ok": false, "workflows": 0}
+      ],
+      "workflows": 1,
+      "runs": 2
+    },
+    "workflows": {
+      "generation_id": "2026-09-27T12:06:00Z-999999aaaaaa",
+      "rows": [
+        {"uid": "wf-ci-unreachable", "cluster": "ci", "phase": "Running", "observed_at": "2026-09-27T12:06:00Z"}
+      ]
+    },
+    "runs": {
+      "generation_id": "2026-09-27T12:06:00Z-999999aaaaaa",
+      "rows": [
+        {"uid": "wf-ci-unreachable", "cluster": "ci", "phase": "Running", "first_seen_at": "2026-09-27T12:06:00Z", "last_seen_at": "2026-09-27T12:06:00Z"},
+        {"uid": "wf-staging-before-unreachable", "cluster": "staging", "phase": "Succeeded", "first_seen_at": "2026-09-26T12:00:00Z", "last_seen_at": "2026-09-26T12:01:00Z"}
+      ]
+    },
+    "expected": {
+      "accepted": true,
+      "selected": "unreachable_cluster",
+      "workflow_uids": ["wf-ci-unreachable"],
+      "run_uids": ["wf-ci-unreachable", "wf-staging-before-unreachable"],
+      "workflow_clusters": ["ci"],
+      "run_clusters": ["ci", "staging"],
+      "cluster_availability": {"ci": true, "staging": false},
+      "unavailable_clusters": ["staging"]
+    }
+  },
+  "partial_pagination_failure": {
+    "description": "A later pagination page failure discards the earlier staging page while another cluster remains current.",
+    "meta": {
+      "version": "fixture",
+      "generated_at": "2026-09-27T12:07:00Z",
+      "generation_id": "2026-09-27T12:07:00Z-aaaaaaaaaaaa",
+      "poll_interval_seconds": 300,
+      "run_retention_days": 7,
+      "clusters": [
+        {"name": "ci", "ok": true, "workflows": 1},
+        {"name": "staging", "ok": false, "workflows": 0}
+      ],
+      "workflows": 1,
+      "runs": 2
+    },
+    "workflows": {
+      "generation_id": "2026-09-27T12:07:00Z-aaaaaaaaaaaa",
+      "rows": [
+        {"uid": "wf-ci-pagination", "cluster": "ci", "phase": "Running", "observed_at": "2026-09-27T12:07:00Z"}
+      ]
+    },
+    "runs": {
+      "generation_id": "2026-09-27T12:07:00Z-aaaaaaaaaaaa",
+      "rows": [
+        {"uid": "wf-ci-pagination", "cluster": "ci", "phase": "Running", "first_seen_at": "2026-09-27T12:07:00Z", "last_seen_at": "2026-09-27T12:07:00Z"},
+        {"uid": "wf-staging-page-one", "cluster": "staging", "phase": "Running", "first_seen_at": "2026-09-27T12:06:00Z", "last_seen_at": "2026-09-27T12:06:00Z"}
+      ]
+    },
+    "expected": {
+      "accepted": true,
+      "selected": "partial_pagination_failure",
+      "workflow_uids": ["wf-ci-pagination"],
+      "run_uids": ["wf-ci-pagination", "wf-staging-page-one"],
+      "workflow_clusters": ["ci"],
+      "run_clusters": ["ci", "staging"],
+      "cluster_availability": {"ci": true, "staging": false},
+      "unavailable_clusters": ["staging"]
+    }
+  },
+  "recovered_cluster": {
+    "description": "A later complete generation marks the previously unavailable cluster healthy and restores its current rows.",
+    "meta": {
+      "version": "fixture",
+      "generated_at": "2026-09-27T12:08:00Z",
+      "generation_id": "2026-09-27T12:08:00Z-bbbbbbbbbbbb",
+      "poll_interval_seconds": 300,
+      "run_retention_days": 7,
+      "clusters": [
+        {"name": "ci", "ok": true, "workflows": 1},
+        {"name": "staging", "ok": true, "workflows": 1}
+      ],
+      "workflows": 2,
+      "runs": 3
+    },
+    "workflows": {
+      "generation_id": "2026-09-27T12:08:00Z-bbbbbbbbbbbb",
+      "rows": [
+        {"uid": "wf-ci-recovered", "cluster": "ci", "phase": "Running", "observed_at": "2026-09-27T12:08:00Z"},
+        {"uid": "wf-staging-recovered", "cluster": "staging", "phase": "Running", "observed_at": "2026-09-27T12:08:00Z"}
+      ]
+    },
+    "runs": {
+      "generation_id": "2026-09-27T12:08:00Z-bbbbbbbbbbbb",
+      "rows": [
+        {"uid": "wf-ci-recovered", "cluster": "ci", "phase": "Running", "first_seen_at": "2026-09-27T12:08:00Z", "last_seen_at": "2026-09-27T12:08:00Z"},
+        {"uid": "wf-staging-recovered", "cluster": "staging", "phase": "Running", "first_seen_at": "2026-09-27T12:08:00Z", "last_seen_at": "2026-09-27T12:08:00Z"},
+        {"uid": "wf-staging-page-one", "cluster": "staging", "phase": "Succeeded", "first_seen_at": "2026-09-27T12:06:00Z", "last_seen_at": "2026-09-27T12:06:00Z"}
+      ]
+    },
+    "expected": {
+      "accepted": true,
+      "selected": "recovered_cluster",
+      "workflow_uids": ["wf-ci-recovered", "wf-staging-recovered"],
+      "run_uids": ["wf-ci-recovered", "wf-staging-recovered", "wf-staging-page-one"],
+      "workflow_clusters": ["ci", "staging"],
+      "run_clusters": ["ci", "staging"],
+      "cluster_availability": {"ci": true, "staging": true},
+      "unavailable_clusters": []
     }
   },
   "stale": {
