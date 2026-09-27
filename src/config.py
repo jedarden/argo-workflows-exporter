@@ -19,6 +19,7 @@ _LOG_LEVEL_ALIASES = {
 }
 
 _S3_ADDRESSING_STYLES = ("auto", "virtual", "path")
+_DEFAULT_DEST_S3_PREFIX = "argo/data"
 
 
 def _require(name):
@@ -31,6 +32,17 @@ def _require(name):
 def _optional(name, default):
     value = os.environ.get(name, "").strip()
     return value if value else default
+
+
+def normalize_s3_prefix(prefix: str) -> str:
+    """Return the canonical boundary-safe form of an S3 key prefix.
+
+    S3 object keys are not filesystem paths: an empty prefix means the bucket
+    root, and slashes at either boundary are only separators supplied by the
+    configuration. Strip those boundary slashes so callers can add exactly
+    one separator when joining an object basename.
+    """
+    return prefix.strip().strip("/")
 
 
 @dataclass(frozen=True)
@@ -167,7 +179,11 @@ def load() -> Config:
         # per-cluster `namespace` overrides this for that cluster only.
         namespace=_optional("WORKFLOW_NAMESPACE", ""),
         dest=dest,
-        dest_prefix=_optional("DEST_S3_PREFIX", "argo/data").rstrip("/"),
+        # An omitted variable gets the documented default. An explicitly
+        # empty variable is meaningful: it selects the bucket root.
+        dest_prefix=normalize_s3_prefix(
+            os.environ.get("DEST_S3_PREFIX", _DEFAULT_DEST_S3_PREFIX)
+        ),
         version=_read_version(_optional("VERSION_FILE", "VERSION")),
         poll_interval_seconds=_positive_int("POLL_INTERVAL_SECONDS", "300"),
         run_retention_days=_positive_int("RUN_RETENTION_DAYS", "7"),

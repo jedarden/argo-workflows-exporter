@@ -54,7 +54,7 @@ ServiceAccount, and there is only one of those.
 | `DEST_S3_ACCESS_KEY_ID` | yes | — | |
 | `DEST_S3_SECRET_ACCESS_KEY` | yes | — | |
 | `DEST_S3_BUCKET` | yes | — | |
-| `DEST_S3_PREFIX` | no | `argo/data` | key prefix for all three output objects |
+| `DEST_S3_PREFIX` | no | `argo/data` | key prefix for all three output objects; an explicitly empty value selects the bucket root, and leading/trailing `/` characters are stripped |
 | `DEST_S3_ADDRESSING_STYLE` | no | `virtual` | `auto`, `virtual`, or `path`; set `path` for S3-compatible stores that have no per-bucket virtual-host DNS, where the default `bucket.endpoint` form redirects; other values fail fast at startup |
 | `DEST_S3_REGION` | no | `us-east-1` | |
 
@@ -69,6 +69,16 @@ ServiceAccount, and there is only one of those.
 | `HEALTH_PORT` | `8080` | `GET /health`; see the [health endpoint contract](../../README.md#health-endpoint) for response fields and status codes |
 | `LOG_LEVEL` | `INFO` | Python logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (case-insensitive; `WARN` and `FATAL` are accepted aliases) |
 | `VERSION_FILE` | `VERSION` | read once at startup, reported in `meta.json`; missing, unreadable, or empty files publish version `"unknown"` |
+
+`DEST_S3_PREFIX` is normalized as an S3 key prefix, not a filesystem path. If
+the variable is omitted it is `argo/data`; if it is explicitly empty (or only
+contains `/` characters), the three objects are written at the bucket root.
+Leading and trailing slashes are removed, so `/team/argo/` becomes
+`team/argo`. Internal characters, including internal slashes, are preserved.
+The publisher and consumer use the same join rule: a non-empty canonical
+prefix followed by exactly one `/` and the object basename, or the basename
+alone at the bucket root. This yields `workflows.parquet`, `runs.parquet`, and
+`meta.json` at the same exact keys for reads and writes.
 
 All numeric variables must parse as integers greater than zero.
 

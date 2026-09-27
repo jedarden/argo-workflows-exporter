@@ -264,7 +264,7 @@ def _run_cycle(cfg: config.Config, s3) -> bool:
             )
             return False
 
-        runs_key = f"{cfg.dest_prefix}/runs.parquet"
+        runs_key = s3io.object_key(cfg.dest_prefix, "runs.parquet")
         # A ledger's generation_id is publication metadata, not row data. A
         # footerless ledger from a pre-generation release is therefore still a
         # valid history input; parquet_bytes_to_table normalizes its rows and
@@ -301,9 +301,13 @@ def _run_cycle(cfg: config.Config, s3) -> bool:
 
         phase = "publish"
         uploads = (
-            (f"{cfg.dest_prefix}/workflows.parquet", workflows_payload, "application/octet-stream"),
+            (
+                s3io.object_key(cfg.dest_prefix, "workflows.parquet"),
+                workflows_payload,
+                "application/octet-stream",
+            ),
             (runs_key, runs_payload, "application/octet-stream"),
-            (f"{cfg.dest_prefix}/meta.json", meta_payload, "application/json"),
+            (s3io.object_key(cfg.dest_prefix, "meta.json"), meta_payload, "application/json"),
         )
         for index, (key, payload, content_type) in enumerate(uploads):
             s3io.upload_bytes(s3, cfg.dest.bucket, key, payload, content_type)

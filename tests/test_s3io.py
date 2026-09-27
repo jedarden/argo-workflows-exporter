@@ -7,7 +7,7 @@ import io
 import pytest
 from botocore.exceptions import ClientError, ReadTimeoutError
 
-from src import main, s3io, workflows
+from src import consumer, main, s3io, workflows
 from src.config import Cluster, Config, S3Endpoint
 
 
@@ -156,6 +156,68 @@ def test_upload_bytes_propagates_client_errors():
         s3io.upload_bytes(S3(), "bucket", "argo/data/runs.parquet", b"payload", "text/plain")
 
     assert raised.value is error
+
+
+@pytest.mark.parametrize(
+    ("prefix", "name", "expected"),
+    [
+        ("", "meta.json", "meta.json"),
+        ("/tenant/argo", "workflows.parquet", "tenant/argo/workflows.parquet"),
+        ("tenant/argo/", "runs.parquet", "tenant/argo/runs.parquet"),
+        ("/tenant/argo/", "meta.json", "tenant/argo/meta.json"),
+    ],
+)
+def test_object_key_normalizes_prefix_boundaries(prefix, name, expected):
+    assert s3io.object_key(prefix, name) == expected
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["", "/tenant/argo", "tenant/argo/", "/tenant/argo/"],
+)
+def test_cycle_and_consumer_use_identical_keys_for_each_publication_object(
+    monkeypatch, prefix
+):
+    class S3:
+        def __init__(self):
+            self.objects = {}
+            self.reads = []
+            self.writes = []
+
+        def get_object(self, Bucket, Key):
+            self.reads.append(Key)
+            try:
+                data = self.objects[Key]
+            except KeyError:
+                raise ClientError(
+                    {"Error": {"Code": "NoSuchKey", "Message": "missing"}},
+                    "GetObject",
+                ) from None
+            return {"Body": io.BytesIO(data)}
+
+        def put_object(self, Bucket, Key, Body, ContentType):
+            self.writes.append(Key)
+            self.objects[Key] = Body
+
+    monkeypatch.setattr(
+        workflows,
+        "fetch_workflows",
+        lambda *args: ([], [{"name": "ci", "ok": True, "workflows": 0}]),
+    )
+    s3 = S3()
+    assert main._run_cycle(_config(prefix), s3) is True
+
+    expected = [
+        s3io.object_key(prefix, name)
+        for name in ("workflows.parquet", "runs.parquet", "meta.json")
+    ]
+    assert s3.writes == expected
+
+    publication = consumer.read_generation(s3, "bucket", prefix)
+    assert publication is not None
+    assert s3.reads == [expected[1], expected[2], expected[0], expected[1]]
+    assert set(s3.objects) == set(expected)
+    assert all("//" not in key for key in [*s3.reads, *s3.writes])
 
 
 def _config(prefix):

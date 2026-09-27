@@ -4,9 +4,20 @@ import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
-from .config import S3Endpoint
+from .config import S3Endpoint, normalize_s3_prefix
 
 log = logging.getLogger(__name__)
+
+
+def object_key(prefix: str, name: str) -> str:
+    """Build the canonical S3 key for an object under ``prefix``.
+
+    Empty prefixes address the bucket root. Boundary slashes are normalized
+    here as well as at configuration load so callers that construct a Config
+    directly cannot accidentally produce ``//`` or a leading-slash key.
+    """
+    prefix = normalize_s3_prefix(prefix)
+    return f"{prefix}/{name}" if prefix else name
 
 
 def client(endpoint: S3Endpoint):

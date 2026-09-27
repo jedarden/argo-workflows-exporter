@@ -236,9 +236,23 @@ def test_invalid_s3_addressing_style_fails_during_startup(monkeypatch, capsys):
     )
 
 
-def test_trailing_slash_is_stripped_from_the_prefix(monkeypatch):
-    _env(monkeypatch, '[{"name": "ci", "base_url": "http://p:8001"}]', DEST_S3_PREFIX="argo/data/")
-    assert load().dest_prefix == "argo/data"
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("", ""),
+        ("/tenant/argo", "tenant/argo"),
+        ("tenant/argo/", "tenant/argo"),
+        ("/tenant/argo/", "tenant/argo"),
+        ("/", ""),
+    ],
+)
+def test_s3_prefix_boundaries_are_normalized(monkeypatch, raw, expected):
+    _env(
+        monkeypatch,
+        '[{"name": "ci", "base_url": "http://p:8001"}]',
+        DEST_S3_PREFIX=raw,
+    )
+    assert load().dest_prefix == expected
 
 
 def test_per_cluster_namespace_override_is_preserved(monkeypatch):

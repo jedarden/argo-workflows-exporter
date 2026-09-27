@@ -239,8 +239,7 @@ def select_generation(
 
 
 def _key(prefix: str, name: str) -> str:
-    prefix = prefix.rstrip("/")
-    return f"{prefix}/{name}" if prefix else name
+    return s3io.object_key(prefix, name)
 
 
 def read_generation(
