@@ -234,6 +234,20 @@ def _paired(meta, workflows_bytes, runs_bytes):
     return ids == {meta["generation_id"]}
 
 
+def _assert_published_counts_and_generation(meta, workflows_bytes, runs_bytes):
+    """Check the sidecar against both published Parquet objects as a reader would."""
+    workflows = parquet_io.parquet_bytes_to_table(
+        workflows_bytes, parquet_io.WORKFLOWS_SCHEMA
+    )
+    runs = parquet_io.parquet_bytes_to_table(runs_bytes, parquet_io.RUNS_SCHEMA)
+
+    assert meta["workflows"] == workflows.num_rows
+    assert meta["runs"] == runs.num_rows
+    assert _paired(meta, workflows_bytes, runs_bytes)
+    assert parquet_io.read_generation_id(workflows_bytes) == meta["generation_id"]
+    assert parquet_io.read_generation_id(runs_bytes) == meta["generation_id"]
+
+
 def _consumer_generation(objects, fallback_generation):
     """Return the generation a pairing-aware consumer is allowed to expose."""
     meta = json.loads(objects["argo/data/meta.json"])
@@ -392,6 +406,7 @@ def test_successful_multi_cluster_cycle_publishes_one_readable_generation(monkey
     } == {("local", True, 2), ("remote", True, 2)}
     assert meta["workflows"] == 4
     assert meta["runs"] == 5
+    _assert_published_counts_and_generation(meta, workflows_bytes, runs_bytes)
 
     snapshot_table = parquet_io.parquet_bytes_to_table(
         workflows_bytes, parquet_io.WORKFLOWS_SCHEMA
@@ -545,7 +560,7 @@ def test_successful_zero_row_cycle_publishes_pairable_empty_snapshot(monkeypatch
         for stat in meta["clusters"]
     } == {"ci": (True, 0), "staging": (False, 0)}
     assert _paired(meta, workflows_bytes, runs_bytes)
-    assert parquet_io.read_generation_id(workflows_bytes) == meta["generation_id"]
+    _assert_published_counts_and_generation(meta, workflows_bytes, runs_bytes)
 
 
 def test_empty_cluster_cycle_skips_publication_and_stays_starting():
@@ -719,7 +734,7 @@ def test_partial_pagination_failure_isolated_from_successful_cluster(monkeypatch
     } == {"healthy": (True, 1), "flaky": (False, 0)}
     assert meta["workflows"] == 1
     assert meta["runs"] == 4
-    assert _paired(meta, workflows_bytes, runs_bytes)
+    _assert_published_counts_and_generation(meta, workflows_bytes, runs_bytes)
 
 
 def test_unreachable_cluster_ledger_rows_follow_last_seen_retention(monkeypatch):
