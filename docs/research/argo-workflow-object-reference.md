@@ -43,10 +43,10 @@ not a usable path to the parent.
 
 | Path | Notes |
 |---|---|
-| `status.phase` | `Pending`, `Running`, `Succeeded`, `Failed`, `Error`. **Empty** on an object the controller has not admitted yet — the UI shows that state as Pending. |
+| `status.phase` | `Pending`, `Running`, `Succeeded`, `Failed`, `Error`. **Empty** on an object the controller has not admitted yet — the UI shows that state as Pending. The exporter normalizes an empty or absent source value to output `phase = "Pending"`, so its phase column remains non-null and limited to those five values. |
 | `status.message` | failure summary, e.g. `workflowtemplates.argoproj.io "x" not found` |
 | `status.progress` | `"N/M"` completed nodes |
-| `status.startedAt` / `finishedAt` | RFC 3339; `finishedAt` absent while running |
+| `status.startedAt` / `finishedAt` | RFC 3339; `finishedAt` is absent while running, but a never-started terminal `Error` can have `finishedAt` without `startedAt` |
 | `status.resourcesDuration` | `{"cpu": int, "memory": int}`, accumulated over the run; other resource keys appear for extended resources |
 | `status.estimatedDuration` | absent on all 64 objects — populated only when Argo has a comparable prior run |
 | `status.nodes` | map of node name to node; up to 8 entries in the sample |
@@ -74,6 +74,12 @@ objects were in this state, with `progress: "0/0"` and no
 `resourcesDuration`. They are worth separating from `Failed` in any success
 metric — nothing ran, so they say nothing about the pipeline's health, only
 about its wiring.
+
+For the exporter, an `Error` object with `finishedAt` but no `startedAt` retains
+that finish timestamp, emits `started_at = null`, and emits
+`duration_seconds = null`: there is no start endpoint from which to calculate a
+duration. This is the same null-duration rule used for an un-admitted object,
+whose empty source phase is exported as `Pending`.
 
 ## Listing and pagination
 

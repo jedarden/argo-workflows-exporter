@@ -220,6 +220,7 @@ def test_event_trigger_falls_back_to_the_sensor_name():
 def test_duration_is_none_while_running():
     assert duration_seconds("2026-08-11T03:31:31Z", None) is None
     assert duration_seconds(None, None) is None
+    assert duration_seconds(None, "2026-08-11T03:32:33Z") is None
     assert duration_seconds("2026-08-11T03:31:31Z", "2026-08-11T03:32:33Z") == 62
 
 
@@ -276,9 +277,33 @@ def test_to_row_shape():
     assert "nvidia.com/gpu" not in row
 
 
-def test_empty_phase_fixture_is_normalized_to_pending():
-    row = to_row(_fixture("empty_phase"), "ci", "2026-09-23T13:00:00Z")
-    assert row["phase"] == "Pending"
+@pytest.mark.parametrize(
+    ("fixture_name", "expected"),
+    [
+        (
+            "empty_phase",
+            {
+                "phase": "Pending",
+                "started_at": None,
+                "finished_at": None,
+                "duration_seconds": None,
+            },
+        ),
+        (
+            "never_started_error",
+            {
+                "phase": "Error",
+                "started_at": None,
+                "finished_at": "2026-09-23T12:00:04Z",
+                "duration_seconds": None,
+            },
+        ),
+    ],
+)
+def test_unstarted_workflow_fixtures_normalize_phase_and_duration(fixture_name, expected):
+    row = to_row(_fixture(fixture_name), "ci", "2026-09-23T13:00:00Z")
+    for field, value in expected.items():
+        assert row[field] == value
 
 
 @pytest.mark.parametrize("status", [{"phase": None}, {"phase": ""}])

@@ -14,6 +14,24 @@
       "phase": ""
     }
   },
+  "never_started_error": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-never-started-error",
+      "name": "missing-template-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Error",
+      "message": "workflowtemplates.argoproj.io \"missing-template\" not found",
+      "progress": "0/0",
+      "finishedAt": "2026-09-23T12:00:04Z"
+    }
+  },
   "namespaced_template": {
     "apiVersion": "argoproj.io/v1alpha1",
     "kind": "Workflow",

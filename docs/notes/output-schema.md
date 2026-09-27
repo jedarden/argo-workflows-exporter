@@ -15,13 +15,13 @@ of columns and differ only in their timestamp columns.
 | `template_scope` | string | inline workflows | `namespaced` or `cluster` |
 | `trigger_kind` | string | nothing recorded | `cron`, `event`, or `user` |
 | `trigger_name` | string | nothing recorded | cron workflow name, Argo Events trigger name, or creator |
-| `phase` | string | never | `Pending`, `Running`, `Succeeded`, `Failed`, `Error` |
+| `phase` | string | never | `Pending`, `Running`, `Succeeded`, `Failed`, `Error`; an empty or absent source phase is normalized to `Pending` |
 | `message` | string | usually, on success | Argo's own summary of why a run ended as it did |
 | `progress` | string | not yet admitted | Argo's `N/M` completed-node counter, verbatim |
 | `created_at` | string | never | RFC 3339, UTC |
-| `started_at` | string | not yet admitted | RFC 3339, UTC |
+| `started_at` | string | not yet admitted or never started | RFC 3339, UTC |
 | `finished_at` | string | still running | RFC 3339, UTC |
-| `duration_seconds` | int64 | still running | wall clock, `finished_at - started_at` |
+| `duration_seconds` | int64 | not yet started or still running | wall clock, `finished_at - started_at` when both timestamps exist |
 | `resources_duration_cpu` | int64 | not yet accumulated | see below |
 | `resources_duration_memory` | int64 | not yet accumulated | see below |
 | `failed_step` | string | not failed; nodes compressed | display name of the earliest failing **pod** node |
@@ -76,6 +76,16 @@ is wanted.
 far". Age of a live run is `observed_at - started_at`, computed by the
 consumer; putting it in the same column as a final duration would make
 running and finished runs indistinguishable.
+
+**Admission and never-started normalization.** Argo can expose a Workflow
+before the controller admits it, with an empty `status.phase` and no
+`startedAt`. The exporter emits `phase = "Pending"`, `started_at = null`, and
+`duration_seconds = null`; this keeps the exported phase non-null while
+retaining the distinction between an Argo source value and the output value.
+An `Error` workflow can be terminal without ever starting and can still carry
+`finishedAt`. For that shape the exporter emits `phase = "Error"`, preserves
+`finished_at`, emits `started_at = null`, and leaves `duration_seconds = null`:
+duration is only defined when both endpoints of the interval are present.
 
 **`resources_duration_*` are Argo's own accumulated counters** (`cpu` and
 `memory` from `status.resourcesDuration`). They are useful as relative cost
