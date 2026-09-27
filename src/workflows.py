@@ -279,7 +279,10 @@ def failed_step(wf):
     Only pod nodes are considered: when a step fails, its parent DAG/steps
     nodes fail too, and reporting those would name the whole workflow back to
     itself instead of the thing that broke. Earliest failure wins — later
-    ones are usually consequences of it.
+    ones are usually consequences of it. Valid, timezone-aware ``startedAt``
+    values are compared by their UTC instant. Nodes with a missing or invalid
+    ``startedAt`` are considered after timestamped nodes, and the node-map key
+    is the deterministic fallback and final tie-breaker.
 
     Argo replaces `status.nodes` with `status.compressedNodes` on very large
     workflows. Decode that field when the node map is absent; malformed
@@ -292,17 +295,22 @@ def failed_step(wf):
     if not isinstance(nodes, dict):
         nodes = {}
     failures = [
-        n for n in nodes.values()
-        if isinstance(n, dict)
-        and n.get("phase") in _TERMINAL_NODE_PHASES
-        and n.get("type") == "Pod"
+        (node_name, node)
+        for node_name, node in nodes.items()
+        if isinstance(node, dict)
+        and node.get("phase") in _TERMINAL_NODE_PHASES
+        and node.get("type") == "Pod"
     ]
     if not failures:
         return None, None
-    earliest = min(
-        failures,
-        key=lambda n: n.get("startedAt") if isinstance(n.get("startedAt"), str) else "",
-    )
+    def selection_key(item):
+        node_name, node = item
+        started_at = _parse_ts(node.get("startedAt"))
+        if started_at is None or started_at.tzinfo is None:
+            return (1, datetime.max.replace(tzinfo=timezone.utc), str(node_name))
+        return (0, started_at.astimezone(timezone.utc), str(node_name))
+
+    _, earliest = min(failures, key=selection_key)
     return earliest.get("displayName") or earliest.get("name"), earliest.get("message")
 
 

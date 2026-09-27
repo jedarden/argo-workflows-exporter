@@ -695,6 +695,51 @@ def test_earliest_failed_pod_is_selected_independent_of_node_order():
 
 
 @pytest.mark.parametrize(
+    ("fixture_name", "expected"),
+    [
+        pytest.param(
+            "failed_step_missing_or_invalid_started_at_nodes",
+            ("valid", "valid timestamp wins"),
+            id="nodes-valid-timestamp-wins-over-fallback",
+        ),
+        pytest.param(
+            "failed_step_fallback_nodes",
+            ("alpha", "fallback node id wins"),
+            id="nodes-missing-invalid-fallback-by-node-id",
+        ),
+        pytest.param(
+            "failed_step_tied_started_at_nodes",
+            ("second", "tie-a wins"),
+            id="nodes-tie-breaks-by-node-id",
+        ),
+        pytest.param(
+            "failed_step_missing_or_invalid_started_at_compressed_nodes",
+            ("valid", "valid timestamp wins"),
+            id="compressed-valid-timestamp-wins-over-fallback",
+        ),
+        pytest.param(
+            "failed_step_fallback_compressed_nodes",
+            ("alpha", "fallback node id wins"),
+            id="compressed-missing-invalid-fallback-by-node-id",
+        ),
+        pytest.param(
+            "failed_step_tied_started_at_compressed_nodes",
+            ("second", "tie-a wins"),
+            id="compressed-tie-breaks-by-node-id",
+        ),
+    ],
+)
+def test_failed_step_selection_is_deterministic_for_all_started_at_cases(
+    fixture_name, expected
+):
+    wf = _fixture(fixture_name)
+
+    assert failed_step(wf) == expected
+    row = to_row(wf, "ci", "2026-09-23T13:00:00Z")
+    assert (row["failed_step"], row["failed_step_message"]) == expected
+
+
+@pytest.mark.parametrize(
     "status",
     [
         {"phase": "Succeeded"},

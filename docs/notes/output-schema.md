@@ -38,7 +38,7 @@ the fields, but an already-reaped run is not retroactively classified.
 | `duration_seconds` | int64 | not yet started or still running | wall clock, `finished_at - started_at` when both timestamps exist |
 | `resources_duration_cpu` | int64 | not yet accumulated | see below |
 | `resources_duration_memory` | int64 | not yet accumulated | see below |
-| `failed_step` | string | not failed; nodes compressed | display name of the earliest failing **pod** node |
+| `failed_step` | string | not failed; nodes compressed | display name of the deterministically selected failing **pod** node |
 | `failed_step_message` | string | as above | that node's own message, which is usually more specific than `message` |
 | `failure_fingerprint` | string | no failure message | 12 hex chars — see [Failure taxonomy](#failure-taxonomy) |
 | `failure_class` | string | no failure message | `timeout`, `oom`, `clone_auth`, `image_pull`, `test_failure`, `lint`, `build`, `infrastructure`, or `unknown` |
@@ -151,6 +151,14 @@ tree into `status.compressedNodes` on very large workflows. The exporter
 decodes that base64+gzip node map when `status.nodes` is absent; malformed
 compressed data is ignored, leaving `failed_step` null while still carrying
 `message`.
+
+The selected node is deterministic: only `type = "Pod"` nodes in a terminal
+`Failed` or `Error` phase are candidates. Nodes with a valid, timezone-aware
+`startedAt` are ordered by their UTC instant, with the earliest first. Nodes
+whose `startedAt` is missing or invalid sort after every timestamped node.
+Equal timestamps, and the all-missing/invalid fallback group, are ordered by
+the node-map key (the node ID) in lexicographic order. This rule is identical
+for `status.nodes` and decoded `status.compressedNodes`.
 
 ## Failure taxonomy
 

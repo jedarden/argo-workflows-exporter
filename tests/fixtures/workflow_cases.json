@@ -444,6 +444,152 @@
       }
     }
   },
+  "failed_step_missing_or_invalid_started_at_nodes": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-failed-step-missing-invalid-nodes",
+      "name": "failed-step-missing-invalid-nodes-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Failed",
+      "nodes": {
+        "missing": {
+          "type": "Pod",
+          "phase": "Failed",
+          "displayName": "missing",
+          "message": "missing timestamp"
+        },
+        "invalid": {
+          "type": "Pod",
+          "phase": "Error",
+          "displayName": "invalid",
+          "startedAt": "not-a-timestamp",
+          "message": "invalid timestamp"
+        },
+        "valid": {
+          "type": "Pod",
+          "phase": "Failed",
+          "displayName": "valid",
+          "startedAt": "2026-09-23T12:10:00Z",
+          "message": "valid timestamp wins"
+        }
+      }
+    }
+  },
+  "failed_step_fallback_nodes": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-failed-step-fallback-nodes",
+      "name": "failed-step-fallback-nodes-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Failed",
+      "nodes": {
+        "zeta": {
+          "type": "Pod",
+          "phase": "Failed",
+          "displayName": "zeta",
+          "message": "zeta fallback"
+        },
+        "alpha": {
+          "type": "Pod",
+          "phase": "Error",
+          "displayName": "alpha",
+          "startedAt": "not-a-timestamp",
+          "message": "fallback node id wins"
+        }
+      }
+    }
+  },
+  "failed_step_tied_started_at_nodes": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-failed-step-tie-nodes",
+      "name": "failed-step-tie-nodes-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Failed",
+      "nodes": {
+        "tie-z": {
+          "type": "Pod",
+          "phase": "Error",
+          "displayName": "first",
+          "startedAt": "2026-09-23T12:00:00Z",
+          "message": "tie-z"
+        },
+        "tie-a": {
+          "type": "Pod",
+          "phase": "Failed",
+          "displayName": "second",
+          "startedAt": "2026-09-23T12:00:00Z",
+          "message": "tie-a wins"
+        }
+      }
+    }
+  },
+  "failed_step_missing_or_invalid_started_at_compressed_nodes": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-failed-step-missing-invalid-compressed",
+      "name": "failed-step-missing-invalid-compressed-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Failed",
+      "compressedNodes": "H4sIAAAAAAAC/32PMQvCMBBG/0q5OYE0gmA2Bx3FwcntIKEeNGnIBaWU/ndbsNiqdbwH33tcB56YKVRgOshtdGDg3FgQEG/I43VEqt0ILHGssT2hH/E0E+AdM1YzVmQaWEYfoRdA4Y412VX/IaUmfemnlYBBlLKz+zzQ0GSJ8q2fx1+LZfx/euW1X2Wt9FaqndSbS6lNqYxS10X+I148KDD0/RPnlcy0YAEAAA=="
+    }
+  },
+  "failed_step_fallback_compressed_nodes": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-failed-step-fallback-compressed",
+      "name": "failed-step-fallback-compressed-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Failed",
+      "compressedNodes": "H4sIAAAAAAAC/3WNOw7CMBAFr2Jt7VwgHQWUiCs88AYs/JN3JRSi3B0blAIhyjfSm1noyQoaF9K5MI10yo4slRukrwN84A6clxIwHxE7fn8sRRbBdQNmQghnXO60WkJoir/afa25/lg/H0uiqMpup42lrAMG9S2liOUruvVMyo6Nd+bhk9C6vgACAtWc1AAAAA=="
+    }
+  },
+  "failed_step_tied_started_at_compressed_nodes": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-failed-step-tie-compressed",
+      "name": "failed-step-tie-compressed-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Failed",
+      "compressedNodes": "H4sIAAAAAAAC/6tWKslM1a1SsqpWKqksSFWyUgrIT1HSUSrISCwG8VyLivKLgPyUzOKCnMRKv8RckGhaZlFxCVC0uCSxqCQ1xbEEKGZkYGSma2Cpa2QcYmhkZWAARFFAJbmpxcWJ6SBNEItqdcCMRJw2uiVm5qSmYFhZnJqcn5dCjp2JCuWZecVKtbUA2QseMOwAAAA="
+    }
+  },
   "missing_nodes": {
     "apiVersion": "argoproj.io/v1alpha1",
     "kind": "Workflow",

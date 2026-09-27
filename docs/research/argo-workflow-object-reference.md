@@ -59,7 +59,10 @@ not a usable path to the parent.
 Each entry in `status.nodes` carries `type` (`Pod`, `Steps`, `DAG`,
 `Retry`, ...), `phase`, `displayName`, `startedAt` and `message`. When a step
 fails, its ancestor `Steps`/`DAG` nodes fail with it, so identifying "the step
-that failed" means filtering to `type == "Pod"` and taking the earliest.
+that failed" means filtering to `type == "Pod"` and taking the earliest valid,
+timezone-aware `startedAt`. The exporter puts missing or invalid timestamps
+after timestamped nodes and uses the node-map key lexicographically for both
+that fallback group and ties.
 
 An observed example of why the node message is worth keeping separately: a
 workflow whose `status.message` said only that a child failed, where the pod
