@@ -616,6 +616,18 @@ def test_first_cycle_without_runs_parquet_publishes_a_pairable_generation(monkey
     )
 
 
+def test_failed_collection_on_first_run_writes_nothing(monkeypatch):
+    """A missing ledger is only normal after at least one cluster succeeds."""
+    s3 = _RecordingS3()
+    _list(monkeypatch, {"ci": ([], False)})
+
+    assert main._run_cycle(_config([Cluster(name="ci")]), s3) is False
+
+    assert s3.objects == {}
+    assert s3.puts == 0
+    assert s3.uploaded_keys == []
+
+
 def test_failed_listing_preserves_the_previous_committed_generation(monkeypatch):
     s3 = _MemoryS3(_prior_generation())
     before = dict(s3.objects)
