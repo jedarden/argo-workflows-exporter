@@ -78,6 +78,54 @@ def test_duplicate_cluster_names_are_rejected(monkeypatch):
         load()
 
 
+@pytest.mark.parametrize("name", ["", 1, None, [], {}])
+def test_cluster_names_must_be_non_empty_strings(monkeypatch, name):
+    _env(monkeypatch, json.dumps([{"name": name}]))
+    with pytest.raises(ConfigError, match="name must be a non-empty string"):
+        load()
+
+
+@pytest.mark.parametrize("field", ["base_url", "namespace"])
+@pytest.mark.parametrize("value", [1, False, [], {}])
+def test_optional_cluster_fields_must_be_strings_or_null(monkeypatch, field, value):
+    _env(monkeypatch, json.dumps([{"name": "ci", field: value}]))
+    with pytest.raises(ConfigError, match=f"{field} must be a string or null"):
+        load()
+
+
+@pytest.mark.parametrize(
+    "clusters_json",
+    [
+        '[{"name": "ci"}, {"name": "ci", "base_url": "http://p:8001"}]',
+        '[{"name": "local-a"}, {"name": "local-b"}]',
+        '[{"name": "ci", "namespace": 42}]',
+    ],
+)
+def test_invalid_clusters_fail_before_health_or_s3(monkeypatch, capsys, clusters_json):
+    _env(monkeypatch, clusters_json)
+    health_calls = []
+    s3_calls = []
+
+    monkeypatch.setattr(
+        main,
+        "_serve_health",
+        lambda *args, **kwargs: health_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        main.s3io,
+        "client",
+        lambda endpoint: s3_calls.append(endpoint),
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        main.main()
+
+    assert raised.value.code == 1
+    assert health_calls == []
+    assert s3_calls == []
+    assert "config error:" in capsys.readouterr().err
+
+
 def test_missing_name_is_reported_with_the_offending_entry(monkeypatch):
     _env(monkeypatch, '[{"base_url": "http://proxy.example:8001"}]')
     with pytest.raises(ConfigError, match="missing required key"):

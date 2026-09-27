@@ -92,19 +92,39 @@ def _parse_clusters(raw: str):
         )
 
     clusters = []
-    for item in items:
-        try:
-            clusters.append(
-                Cluster(
-                    name=item["name"],
-                    base_url=item.get("base_url"),
-                    namespace=item.get("namespace"),
-                )
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ConfigError(
+                f"CLUSTERS_JSON entry {index} is not an object: {item}"
             )
-        except KeyError as e:
-            raise ConfigError(f"CLUSTERS_JSON entry missing required key {e}: {item}")
-        except TypeError:
-            raise ConfigError(f"CLUSTERS_JSON entry is not an object: {item}")
+
+        if "name" not in item:
+            raise ConfigError(
+                f"CLUSTERS_JSON entry missing required key 'name': {item}"
+            )
+        name = item["name"]
+        if not isinstance(name, str) or not name:
+            raise ConfigError(
+                f"CLUSTERS_JSON entry {index} name must be a non-empty string: {item}"
+            )
+
+        optional_fields = {
+            "base_url": item.get("base_url"),
+            "namespace": item.get("namespace"),
+        }
+        for field, value in optional_fields.items():
+            if value is not None and not isinstance(value, str):
+                raise ConfigError(
+                    f"CLUSTERS_JSON entry {index} {field} must be a string or null: {item}"
+                )
+
+        clusters.append(
+            Cluster(
+                name=name,
+                base_url=optional_fields["base_url"],
+                namespace=optional_fields["namespace"],
+            )
+        )
 
     names = [c.name for c in clusters]
     if len(set(names)) != len(names):
