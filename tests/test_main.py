@@ -787,6 +787,175 @@ def test_paginated_request_timeout_isolated_from_successful_cluster(monkeypatch)
     _assert_published_counts_and_generation(meta, workflows_bytes, runs_bytes)
 
 
+@pytest.mark.parametrize("failure_mode", ["unreachable", "pagination"])
+def test_mixed_success_replaces_snapshot_but_retains_failed_cluster_ledger(
+    monkeypatch, failure_mode
+):
+    """A partial collection publishes only complete current snapshots.
+
+    The previous publication deliberately contains rows for both clusters so
+    this checks the distinction between the snapshot (current, and therefore
+    dropping the failed cluster) and the ledger (historical, and therefore
+    retaining the failed cluster's last observations).
+    """
+    previous_generated_at = "2026-09-27T11:55:00Z"
+    generated_at = "2026-09-27T12:00:00Z"
+    previous_generation_id = f"{previous_generated_at}-000000aaaaaa"
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+    monkeypatch.setattr(
+        ledger, "_cutoff", lambda _retention_days: "2026-09-20T00:00:00Z"
+    )
+
+    previous_snapshot = [
+        {
+            "uid": "healthy-before",
+            "cluster": "healthy",
+            "observed_at": previous_generated_at,
+        },
+        {
+            "uid": "failed-before",
+            "cluster": "failed",
+            "observed_at": previous_generated_at,
+        },
+    ]
+    previous_runs = [
+        {
+            "uid": "healthy-before",
+            "cluster": "healthy",
+            "first_seen_at": previous_generated_at,
+            "last_seen_at": previous_generated_at,
+        },
+        {
+            "uid": "failed-before",
+            "cluster": "failed",
+            "first_seen_at": previous_generated_at,
+            "last_seen_at": previous_generated_at,
+        },
+    ]
+    s3 = _MemoryS3(
+        {
+            "argo/data/workflows.parquet": parquet_io.table_to_parquet_bytes(
+                previous_snapshot, parquet_io.WORKFLOWS_SCHEMA, previous_generation_id
+            ),
+            "argo/data/runs.parquet": parquet_io.table_to_parquet_bytes(
+                previous_runs, parquet_io.RUNS_SCHEMA, previous_generation_id
+            ),
+            "argo/data/meta.json": json.dumps(
+                {
+                    "version": "test",
+                    "generated_at": previous_generated_at,
+                    "generation_id": previous_generation_id,
+                    "poll_interval_seconds": 300,
+                    "run_retention_days": 7,
+                    "clusters": [
+                        {"name": "healthy", "ok": True, "workflows": 1},
+                        {"name": "failed", "ok": True, "workflows": 1},
+                    ],
+                    "workflows": 2,
+                    "runs": 2,
+                }
+            ).encode(),
+        }
+    )
+    cfg = replace(
+        _config(
+            [
+                Cluster(name="healthy", base_url="http://healthy.example"),
+                Cluster(name="failed", base_url="http://failed.example"),
+            ]
+        ),
+        page_size=1,
+    )
+
+    pages = {
+        "http://healthy.example": {
+            None: {"items": [_workflow("healthy-now", "healthy-now")]}
+        },
+        "http://failed.example": {
+            None: (
+                {
+                    "items": [_workflow("failed-partial", "failed-partial")],
+                    "metadata": {"continue": "failed-next"},
+                }
+                if failure_mode == "pagination"
+                else k8s_api.requests.Timeout("failed cluster is unreachable")
+            ),
+            "failed-next": k8s_api.requests.Timeout("failed pagination request timed out"),
+        },
+    }
+    calls = []
+
+    def fake_get(url, params=None, **kwargs):
+        params = dict(params or {})
+        calls.append((url, params, kwargs))
+        cluster_url = url.split("/apis/", 1)[0]
+        page = pages[cluster_url][params.get("continue")]
+        if isinstance(page, BaseException):
+            raise page
+        return SimpleNamespace(status_code=200, json=lambda: page)
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+
+    assert main._run_cycle(cfg, s3) is True
+
+    expected_calls = [
+        (
+            "http://healthy.example/apis/argoproj.io/v1alpha1/workflows",
+            {"limit": 1},
+            {"timeout": 10},
+        ),
+        (
+            "http://failed.example/apis/argoproj.io/v1alpha1/workflows",
+            {"limit": 1},
+            {"timeout": 10},
+        ),
+    ]
+    if failure_mode == "pagination":
+        expected_calls.append(
+            (
+                "http://failed.example/apis/argoproj.io/v1alpha1/workflows",
+                {"limit": 1, "continue": "failed-next"},
+                {"timeout": 10},
+            )
+        )
+    assert calls == expected_calls
+
+    workflows_bytes = s3.objects["argo/data/workflows.parquet"]
+    runs_bytes = s3.objects["argo/data/runs.parquet"]
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    meta_schema.validate(meta)
+
+    snapshot = parquet_io.parquet_bytes_to_table(
+        workflows_bytes, parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    assert {(row["cluster"], row["uid"]) for row in snapshot} == {
+        ("healthy", "healthy-now")
+    }
+    assert ("failed", "failed-before") not in {
+        (row["cluster"], row["uid"]) for row in snapshot
+    }
+    runs = parquet_io.parquet_bytes_to_table(runs_bytes, parquet_io.RUNS_SCHEMA).to_pylist()
+    runs_by_key = {(row["cluster"], row["uid"]): row for row in runs}
+    assert set(runs_by_key) == {
+        ("healthy", "healthy-before"),
+        ("healthy", "healthy-now"),
+        ("failed", "failed-before"),
+    }
+    assert runs_by_key["failed", "failed-before"]["last_seen_at"] == previous_generated_at
+    assert ("failed", "failed-partial") not in runs_by_key
+
+    assert {
+        stat["name"]: (stat["ok"], stat["workflows"])
+        for stat in meta["clusters"]
+    } == {"healthy": (True, 1), "failed": (False, 0)}
+    assert meta["workflows"] == 1
+    assert meta["runs"] == 3
+    assert meta["generated_at"] == generated_at
+    assert meta["generation_id"].startswith(f"{generated_at}-")
+    assert meta["generation_id"] != previous_generation_id
+    _assert_published_counts_and_generation(meta, workflows_bytes, runs_bytes)
+
+
 def test_all_cluster_request_timeouts_preserve_the_previous_generation(monkeypatch):
     """A cycle with no successful cluster must not write an empty snapshot."""
     cfg = replace(
