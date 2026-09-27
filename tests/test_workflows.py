@@ -460,6 +460,20 @@ def test_to_row_shape():
 @pytest.mark.parametrize(
     ("fixture_name", "expected"),
     [
+        pytest.param("progress_populated", "7/12", id="populated"),
+        pytest.param("progress_absent", None, id="absent-is-null"),
+        pytest.param("progress_empty", "", id="empty-is-verbatim"),
+    ],
+)
+def test_progress_is_null_when_absent_and_verbatim_when_present(fixture_name, expected):
+    row = to_row(_fixture(fixture_name), "ci", "2026-09-23T13:00:00Z")
+
+    assert row["progress"] == expected
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected"),
+    [
         (
             "empty_phase",
             {

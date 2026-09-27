@@ -127,6 +127,60 @@ def test_conform_backfills_a_column_added_by_a_later_release():
     assert row["failure_class"] is None
 
 
+@pytest.mark.parametrize(
+    ("schema", "tail"),
+    [
+        pytest.param(
+            WORKFLOWS_SCHEMA,
+            [("observed_at", pa.string())],
+            id="workflows",
+        ),
+        pytest.param(
+            RUNS_SCHEMA,
+            [("first_seen_at", pa.string()), ("last_seen_at", pa.string())],
+            id="runs",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("legacy_progress", "expected"),
+    [
+        pytest.param({}, None, id="missing-is-null"),
+        pytest.param({"progress": "7/12"}, "7/12", id="populated-is-verbatim"),
+        pytest.param({"progress": ""}, "", id="empty-is-verbatim"),
+    ],
+)
+def test_conform_backfills_or_preserves_progress(schema, tail, legacy_progress, expected):
+    fields = [
+        ("uid", pa.string()),
+        ("phase", pa.string()),
+        *([("progress", pa.string())] if "progress" in legacy_progress else []),
+        *tail,
+    ]
+    tail_values = {
+        "observed_at": "2026-09-23T13:00:00Z",
+        "first_seen_at": "2026-09-23T12:00:00Z",
+        "last_seen_at": "2026-09-23T13:00:00Z",
+    }
+    old = pa.Table.from_pylist(
+        [
+            {
+                "uid": "uid-progress",
+                "phase": "Running",
+                **legacy_progress,
+                **{name: tail_values[name] for name, _ in tail},
+            }
+        ],
+        schema=pa.schema(fields),
+    )
+
+    conformed = conform(old, schema)
+
+    assert conformed.schema == schema
+    assert conformed.column("progress").type == pa.string()
+    assert conformed.to_pylist()[0]["progress"] == expected
+
+
 def test_ledger_roundtrip_preserves_values_types_and_nulls():
     """The full ledger schema end to end: a run in flight (nulls where a live
     run legitimately has none — duration, finished_at, the failure columns)

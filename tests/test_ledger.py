@@ -1,9 +1,18 @@
 from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
 
 import pytest
 
 from src.ledger import merge
-from src.workflows import normalize_failure
+from src.workflows import normalize_failure, to_row
+
+
+_WORKFLOW_CASES = json.loads(
+    (Path(__file__).with_name("fixtures") / "workflow_cases.json").read_text(
+        encoding="utf-8"
+    )
+)
 
 
 def _observed(uid="uid-1", phase="Running", **extra):
@@ -52,6 +61,24 @@ def test_first_observation_derives_the_shared_failure_taxonomy():
 
     assert row["failure_class"] == "build"
     assert row["failure_fingerprint"] == normalize_failure(message)[1]
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected"),
+    [
+        pytest.param("progress_populated", "7/12", id="populated"),
+        pytest.param("progress_absent", None, id="absent-is-null"),
+        pytest.param("progress_empty", "", id="empty-is-verbatim"),
+    ],
+)
+def test_ledger_folds_progress_without_coercion(fixture_name, expected):
+    observed = to_row(
+        _WORKFLOW_CASES[fixture_name], "ci", "2026-09-23T13:00:00Z"
+    )
+
+    [row] = merge([], [observed], _ts(0), 7)
+
+    assert row["progress"] == expected
 
 
 @pytest.mark.parametrize(

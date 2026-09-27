@@ -624,6 +624,49 @@ def test_observed_workflow_has_shared_column_parity_across_published_outputs(
     }
 
 
+def test_progress_fixtures_reach_both_published_parquet_outputs(monkeypatch):
+    cases = json.loads(
+        (Path(__file__).with_name("fixtures") / "workflow_cases.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    generated_at = "2026-09-23T19:00:00Z"
+    expected = {
+        "progress_populated": "7/12",
+        "progress_absent": None,
+        "progress_empty": "",
+    }
+    observed = [cases[name] for name in expected]
+
+    cfg = _config([Cluster(name="ci")])
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+    monkeypatch.setattr(
+        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
+    )
+    _list(monkeypatch, {"ci": (observed, True)})
+
+    s3 = _MemoryS3()
+    assert main._run_cycle(cfg, s3) is True
+
+    snapshot = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/workflows.parquet"], parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    runs = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
+    ).to_pylist()
+
+    assert {
+        row["uid"]: row["progress"] for row in snapshot
+    } == {
+        cases[name]["metadata"]["uid"]: value for name, value in expected.items()
+    }
+    assert {
+        row["uid"]: row["progress"] for row in runs
+    } == {
+        cases[name]["metadata"]["uid"]: value for name, value in expected.items()
+    }
+
+
 def test_mixed_reachability_omits_failed_cluster_and_its_prior_rows(monkeypatch):
     responses = {
         "ci": ([_workflow("ci-current", "ci-current")], True),
