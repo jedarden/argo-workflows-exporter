@@ -8,6 +8,12 @@ fast with a clear message rather than crash-looping later mid-cycle.
 
 A JSON array describing every cluster to poll.
 
+The array must contain at least one cluster. An empty array is invalid rather
+than a supported no-write mode: the exporter exits with a configuration error
+before starting `/health` or creating an S3 client. This prevents a process
+with nothing to poll from remaining indefinitely `starting` while publishing
+no generation.
+
 ```json
 [
   {"name": "ci", "base_url": "http://kubectl-proxy-ci.example:8001"},

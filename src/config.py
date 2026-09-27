@@ -71,8 +71,12 @@ def _parse_clusters(raw: str):
     except json.JSONDecodeError as e:
         raise ConfigError(f"CLUSTERS_JSON is not valid JSON: {e}")
 
-    if not isinstance(items, list) or not items:
-        raise ConfigError("CLUSTERS_JSON must be a non-empty JSON array")
+    if not isinstance(items, list):
+        raise ConfigError("CLUSTERS_JSON must be a JSON array")
+    if not items:
+        raise ConfigError(
+            "CLUSTERS_JSON must be a non-empty JSON array; at least one cluster is required"
+        )
 
     clusters = []
     for item in items:

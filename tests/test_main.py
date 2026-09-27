@@ -548,6 +548,18 @@ def test_successful_zero_row_cycle_publishes_pairable_empty_snapshot(monkeypatch
     assert parquet_io.read_generation_id(workflows_bytes) == meta["generation_id"]
 
 
+def test_empty_cluster_cycle_skips_publication_and_stays_starting():
+    """The normal entry point rejects this config; direct callers still no-op safely."""
+    cfg = _config([])
+    s3 = _MemoryS3()
+    health = main._HealthState(cfg.poll_interval_seconds)
+
+    assert main._run_cycle(cfg, s3) is False
+    assert s3.objects == {}
+    assert s3.puts == 0
+    assert health.snapshot() == (503, {"status": "starting", "last_success_at": None})
+
+
 def test_partial_listing_omits_the_entire_cluster_from_the_new_snapshot(monkeypatch):
     responses = {
         "ci": ([_workflow("ci-current", "ci-current")], True),

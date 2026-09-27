@@ -90,11 +90,42 @@ def test_malformed_json_is_reported_as_such(monkeypatch):
         load()
 
 
-@pytest.mark.parametrize("raw", ["{}", "[]", "null"])
-def test_clusters_must_be_a_non_empty_array(monkeypatch, raw):
+@pytest.mark.parametrize("raw", ["{}", "null"])
+def test_clusters_must_be_an_array(monkeypatch, raw):
     _env(monkeypatch, raw)
+    with pytest.raises(ConfigError, match="must be a JSON array"):
+        load()
+
+
+def test_empty_cluster_array_is_rejected(monkeypatch):
+    _env(monkeypatch, "[]")
     with pytest.raises(ConfigError, match="non-empty JSON array"):
         load()
+
+
+def test_empty_cluster_array_fails_before_health_or_publication(monkeypatch, capsys):
+    _env(monkeypatch, "[]")
+    health_calls = []
+    s3_calls = []
+
+    monkeypatch.setattr(
+        main,
+        "_serve_health",
+        lambda *args, **kwargs: health_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        main.s3io,
+        "client",
+        lambda endpoint: s3_calls.append(endpoint),
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        main.main()
+
+    assert raised.value.code == 1
+    assert health_calls == []
+    assert s3_calls == []
+    assert "at least one cluster is required" in capsys.readouterr().err
 
 
 def test_cluster_entries_must_be_objects(monkeypatch):
