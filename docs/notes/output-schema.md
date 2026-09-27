@@ -159,7 +159,7 @@ It is unsalted and unversioned on purpose. Its value is joining failures
 observed at different times (a retry against its original, this week's runs
 against last month's), so a re-derivation that produced new values would
 silently break every join already in flight. The normalization rules in
-`src/workflows.py` are therefore append-mostly: tightening a rule changes
+`src/failure_taxonomy.py` are therefore append-mostly: tightening a rule changes
 future fingerprints, and existing stored values are never recomputed.
 
 **`failure_class`** comes from `src/failure_classes.yaml`, an ordered table of

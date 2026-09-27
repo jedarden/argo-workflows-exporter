@@ -83,7 +83,7 @@ Two tables and a sidecar, defined in
   sources for the factory attempt ledger (NEEDLE plan section 4.4): a bead's
   CI run is joined on the workflow name/commit recorded in `attempt.resolved`,
   and its fingerprint becomes the CI half of a failure signature. Shipped
-  2026-09-06 in 0.2.0 (`src/workflows.py` `normalize_failure` /
+  2026-09-06 in 0.2.0 (`src/failure_taxonomy.py` `normalize_failure` /
   `failure_class`, rules in `src/failure_classes.yaml`, rationale in
   [`../notes/output-schema.md`](../notes/output-schema.md)).
 - [ ] **Phase 3b: Depth, if wanted.** Candidates, none committed:

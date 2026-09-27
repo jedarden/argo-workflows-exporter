@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.ledger import merge
+from src.workflows import normalize_failure
 
 
 def _observed(uid="uid-1", phase="Running", **extra):
@@ -32,6 +33,25 @@ def test_first_observation_stamps_both_timestamps():
     assert row["last_seen_at"] == now
     # observed_at belongs to the snapshot, not the ledger.
     assert "observed_at" not in row
+
+
+def test_first_observation_derives_the_shared_failure_taxonomy():
+    message = "error[E0432]: unresolved import crate::workflows"
+    observed = _observed(
+        phase="Failed",
+        message="failed step 'build'",
+        failed_step="build",
+        failed_step_message=message,
+        # The ledger must derive these from evidence instead of trusting a
+        # caller's omitted or stale values.
+        failure_fingerprint=None,
+        failure_class="unknown",
+    )
+
+    [row] = merge([], [observed], _ts(0), 7)
+
+    assert row["failure_class"] == "build"
+    assert row["failure_fingerprint"] == normalize_failure(message)[1]
 
 
 @pytest.mark.parametrize(

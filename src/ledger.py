@@ -19,6 +19,8 @@ entirely between two polls is never observed and never recorded. See
 import logging
 from datetime import datetime, timedelta, timezone
 
+from .failure_taxonomy import failure_columns
+
 log = logging.getLogger(__name__)
 
 
@@ -74,6 +76,11 @@ def merge(existing_rows, observed_rows, generated_at: str, retention_days: int):
             continue
 
         row = {k: v for k, v in observed.items() if k != "observed_at"}
+        # The snapshot and ledger are separate Parquet products, so derive the
+        # shared taxonomy at the ledger boundary as well. This keeps
+        # runs.parquet correct for every observed row, even if a caller did not
+        # precompute (or supplied stale) derived fields.
+        row.update(failure_columns(row.get("failed_step_message"), row.get("message")))
         key = _identity(observed)
         previous = by_key.get(key)
         row["first_seen_at"] = previous["first_seen_at"] if previous else generated_at
