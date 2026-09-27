@@ -690,6 +690,96 @@ def test_partial_pagination_failure_isolated_from_successful_cluster(monkeypatch
     assert _paired(meta, workflows_bytes, runs_bytes)
 
 
+def test_unreachable_cluster_ledger_rows_follow_last_seen_retention(monkeypatch):
+    """A failed cluster is absent from the snapshot, but its ledger ages normally."""
+    generated_at = "2026-09-27T12:00:00Z"
+    cutoff = "2026-09-20T00:00:00Z"
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: cutoff)
+    _list(
+        monkeypatch,
+        {
+            "healthy": ([_workflow("healthy-current", "healthy-current")], True),
+            "unreachable": ([], False),
+        },
+    )
+
+    prior_runs = [
+        {
+            "uid": "healthy-current",
+            "cluster": "healthy",
+            "name": "healthy-old-name",
+            "phase": "Running",
+            "first_seen_at": "2026-09-01T10:00:00Z",
+            "last_seen_at": "2026-09-19T10:00:00Z",
+        },
+        {
+            "uid": "unreachable-retained",
+            "cluster": "unreachable",
+            "name": "unreachable-retained",
+            "phase": "Failed",
+            "message": "prior failure",
+            "first_seen_at": "2026-09-10T10:00:00Z",
+            "last_seen_at": cutoff,
+        },
+        {
+            "uid": "unreachable-expired",
+            "cluster": "unreachable",
+            "name": "unreachable-expired",
+            "phase": "Succeeded",
+            "first_seen_at": "2026-09-09T10:00:00Z",
+            "last_seen_at": "2026-09-19T23:59:59Z",
+        },
+    ]
+    s3 = _MemoryS3(
+        {
+            "argo/data/runs.parquet": parquet_io.table_to_parquet_bytes(
+                prior_runs, parquet_io.RUNS_SCHEMA
+            )
+        }
+    )
+
+    cfg = _config([Cluster(name="healthy"), Cluster(name="unreachable")])
+    assert main._run_cycle(cfg, s3) is True
+
+    workflows_bytes = s3.objects["argo/data/workflows.parquet"]
+    runs_bytes = s3.objects["argo/data/runs.parquet"]
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    snapshot = parquet_io.parquet_bytes_to_table(
+        workflows_bytes, parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    runs = parquet_io.parquet_bytes_to_table(runs_bytes, parquet_io.RUNS_SCHEMA).to_pylist()
+
+    assert {(row["cluster"], row["uid"]) for row in snapshot} == {
+        ("healthy", "healthy-current")
+    }
+    runs_by_key = {(row["cluster"], row["uid"]): row for row in runs}
+    assert runs_by_key["healthy", "healthy-current"]["first_seen_at"] == "2026-09-01T10:00:00Z"
+    assert runs_by_key["healthy", "healthy-current"]["last_seen_at"] == generated_at
+    assert runs_by_key["healthy", "healthy-current"]["name"] == "healthy-current"
+    assert {
+        key: runs_by_key["unreachable", "unreachable-retained"][key]
+        for key in ("phase", "message", "first_seen_at", "last_seen_at")
+    } == {
+        "phase": "Failed",
+        "message": "prior failure",
+        "first_seen_at": "2026-09-10T10:00:00Z",
+        "last_seen_at": cutoff,
+    }
+    assert ("unreachable", "unreachable-expired") not in runs_by_key
+    assert ("unreachable", "unreachable-retained") not in {
+        (row["cluster"], row["uid"]) for row in snapshot
+    }
+
+    assert {
+        stat["name"]: (stat["ok"], stat["workflows"])
+        for stat in meta["clusters"]
+    } == {"healthy": (True, 1), "unreachable": (False, 0)}
+    assert meta["workflows"] == 1
+    assert meta["runs"] == 2
+    assert _paired(meta, workflows_bytes, runs_bytes)
+
+
 _GENERATED_AT = "2026-09-23T19:00:00Z"
 _OLD_GEN = f"{_GENERATED_AT}-000000aaaaaa"
 _NEW_GENERATED_AT = "2026-09-23T19:01:00Z"
