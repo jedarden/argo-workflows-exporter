@@ -121,6 +121,24 @@ def _publication_value(
     return getattr(publication, name, None)
 
 
+def _valid_meta(meta: Any) -> bool:
+    """Whether metadata is a complete, internally consistent sidecar.
+
+    ``read_generation`` validates the decoded object before downloading the
+    Parquet payloads. The other consumer helpers are also public entry points,
+    though, and callers can construct a :class:`Publication` without going
+    through storage. Apply the same boundary check there so matching footer
+    IDs cannot make malformed metadata look committed.
+    """
+
+    try:
+        meta_schema.validate(meta)
+    except (TypeError, ValueError, meta_schema.MetaSchemaError) as exc:
+        log.warning("rejecting publication with invalid meta.json: %s", exc)
+        return False
+    return True
+
+
 def cluster_availability(
     publication: Publication | Mapping[str, Any],
 ) -> dict[str, bool]:
@@ -175,14 +193,17 @@ def _footer_generation_id(data: bytes | None) -> str | None:
 def is_complete_generation(
     publication: Publication | Mapping[str, Any] | None,
 ) -> bool:
-    """Whether all three objects carry one non-empty generation id.
+    """Whether the sidecar and both data objects form one valid generation.
 
-    This is intentionally a footer-only check.  In particular, zero-row
-    Parquet files are valid generations because their identity is stored in
-    file metadata rather than in a row.
+    Zero-row Parquet files are valid generations because their identity is
+    stored in file metadata rather than in a row, but a matching footer ID is
+    not enough to commit malformed sidecar metadata.
     """
 
     if publication is None:
+        return False
+
+    if not _valid_meta(_publication_value(publication, "meta")):
         return False
 
     ids = generation_ids(publication)
@@ -190,16 +211,11 @@ def is_complete_generation(
     if not all(value is not None for value in values) or len(set(values)) != 1:
         return False
 
-    # ``read_generation`` schema-validates the sidecar, but callers may use
-    # this helper directly with an in-memory publication. When generated_at
-    # is present, require the same timestamp to name the generation id and
-    # the freshness heartbeat. Legacy schema-only fixtures omit generated_at
-    # and remain pairable for their explicit migration use case.
+    # The schema validator requires this relationship too. Keep this explicit
+    # check beside the footer comparison so the identity rule remains clear at
+    # the point where a publication becomes eligible for selection.
     meta = _publication_value(publication, "meta")
-    generated_at = meta.get("generated_at") if isinstance(meta, Mapping) else None
-    if generated_at is not None:
-        return isinstance(generated_at, str) and values[0].startswith(f"{generated_at}-")
-    return True
+    return values[0].startswith(f"{meta['generated_at']}-")
 
 
 def select_generation(
@@ -218,8 +234,8 @@ def select_generation(
     by identity and is not reinterpreted or mixed with candidate payloads.
     """
 
-    ids = generation_ids(candidate) if candidate is not None else None
-    if ids is None or not is_complete_generation(candidate):
+    if candidate is None or not is_complete_generation(candidate):
+        ids = generation_ids(candidate) if candidate is not None else None
         if ids is not None and len(set(ids.values())) > 1:
             log.warning(
                 "rejecting inconsistent publication generation ids: "

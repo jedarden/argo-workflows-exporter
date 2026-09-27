@@ -579,6 +579,37 @@ def test_read_generation_rejects_malformed_meta_before_first_generation(
     assert calls == ["argo/data/meta.json"]
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("version", 7),
+        ("generated_at", "2026-09-27 12:00:00"),
+        ("generation_id", "not-a-generation-id"),
+        ("poll_interval_seconds", "60"),
+        ("run_retention_days", 0),
+        ("clusters", [{"name": "ci", "ok": True, "workflows": "1"}]),
+        ("clusters", [{"name": "ci", "ok": 1, "workflows": 1}]),
+        ("clusters", [{"name": "ci", "ok": False, "workflows": 1}]),
+        ("workflows", "1"),
+        ("runs", True),
+    ],
+)
+def test_direct_selection_rejects_malformed_meta(
+    fixtures, field, value
+):
+    previous = _materialize(fixtures["complete"])
+    malformed_meta = dict(previous.meta)
+    malformed_meta[field] = value
+    candidate = consumer.Publication(
+        meta=malformed_meta,
+        workflows=previous.workflows,
+        runs=previous.runs,
+    )
+
+    assert consumer.is_complete_generation(candidate) is False
+    assert consumer.select_generation(candidate, previous) is previous
+
+
 def _stored_fixture_objects(case, prefix="argo/data"):
     """Materialize only the objects present in an incomplete fixture."""
     objects = {}
