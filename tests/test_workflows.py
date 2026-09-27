@@ -3,11 +3,13 @@ import json
 import re
 from pathlib import Path
 
+import pyarrow as pa
 import pytest
 
 from src import workflows
 from src.config import Cluster
 from src.k8s_api import KubernetesResponseError
+from src.parquet_io import WORKFLOWS_SCHEMA, parquet_bytes_to_table, table_to_parquet_bytes
 from src.workflows import (
     MalformedWorkflowError,
     _load_failure_classes,
@@ -423,6 +425,25 @@ def test_missing_resource_counters_are_null(resources):
     )
     assert row["resources_duration_cpu"] is None
     assert row["resources_duration_memory"] is None
+
+
+def test_absent_resources_duration_is_typed_null_for_never_started_error():
+    wf = _fixture("never_started_error")
+    assert "resourcesDuration" not in wf["status"]
+
+    row = to_row(wf, "ci", "2026-09-23T13:00:00Z")
+    assert row["progress"] == "0/0"
+    assert row["resources_duration_cpu"] is None
+    assert row["resources_duration_memory"] is None
+
+    table = parquet_bytes_to_table(
+        table_to_parquet_bytes([row], WORKFLOWS_SCHEMA), WORKFLOWS_SCHEMA
+    )
+    assert table.schema.field("resources_duration_cpu").type == pa.int64()
+    assert table.schema.field("resources_duration_memory").type == pa.int64()
+    [stored] = table.to_pylist()
+    assert stored["resources_duration_cpu"] is None
+    assert stored["resources_duration_memory"] is None
 
 
 def test_earliest_failed_pod_is_selected_independent_of_node_order():

@@ -115,7 +115,8 @@ duration is only defined when both endpoints of the interval are present.
 `memory` from `status.resourcesDuration`). They are useful as relative cost
 indicators between runs of the same pipeline; do not present them as
 absolute CPU-seconds or bytes without verifying the units against the Argo
-version in use. Extended resources such as GPUs are not kept as columns.
+version in use. Extended-resource keys such as GPUs are dropped; only `cpu`
+and `memory` are mapped to output columns.
 
 **`failed_step` is a convenience, not a guarantee.** Argo compresses the node
 tree into `status.compressedNodes` on very large workflows, and this exporter
