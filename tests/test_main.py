@@ -481,6 +481,71 @@ def test_successful_multi_cluster_cycle_publishes_one_readable_generation(monkey
     assert snapshot_by_key["remote", "uid-completed"]["failure_class"] is None
 
 
+def test_observed_workflow_has_shared_column_parity_across_published_outputs(
+    monkeypatch,
+):
+    cases = json.loads(
+        (Path(__file__).with_name("fixtures") / "workflow_cases.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    generated_at = "2026-09-23T19:00:00Z"
+    observed = cases["cross_output_parity"]
+    cfg = _config([Cluster(name="ci")])
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+    monkeypatch.setattr(
+        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
+    )
+    _list(monkeypatch, {"ci": ([observed], True)})
+
+    s3 = _MemoryS3()
+    assert main._run_cycle(cfg, s3) is True
+
+    snapshot = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/workflows.parquet"], parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    runs = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
+    ).to_pylist()
+    [snapshot_row] = snapshot
+    [run_row] = runs
+
+    assert snapshot_row["observed_at"] == generated_at
+    assert run_row["first_seen_at"] == generated_at
+    assert run_row["last_seen_at"] == generated_at
+    assert snapshot_row["template"] == "cross-output-template"
+    assert snapshot_row["trigger_kind"] == "event"
+    assert snapshot_row["trigger_name"] == "pull-request-trigger"
+    assert snapshot_row["progress"] == "2/3"
+    assert snapshot_row["created_at"] == "2026-09-23T12:00:00Z"
+    assert snapshot_row["started_at"] == "2026-09-23T12:00:01Z"
+    assert snapshot_row["finished_at"] == "2026-09-23T12:01:03Z"
+    assert snapshot_row["duration_seconds"] == 62
+    assert snapshot_row["resources_duration_cpu"] == 42
+    assert snapshot_row["resources_duration_memory"] == 2048
+    assert snapshot_row["failed_step"] == "compile"
+    assert snapshot_row["failed_step_message"] == (
+        "OOMKilled: process exceeded memory limit"
+    )
+    assert snapshot_row["failure_class"] == "oom"
+    assert snapshot_row["failure_fingerprint"] == workflows.normalize_failure(
+        snapshot_row["failed_step_message"]
+    )[1]
+
+    shared_columns = [
+        name
+        for name in parquet_io.WORKFLOWS_SCHEMA.names
+        if name in parquet_io.RUNS_SCHEMA.names
+    ]
+    assert {
+        name: snapshot_row[name]
+        for name in shared_columns
+    } == {
+        name: run_row[name]
+        for name in shared_columns
+    }
+
+
 def test_mixed_reachability_omits_failed_cluster_and_its_prior_rows(monkeypatch):
     responses = {
         "ci": ([_workflow("ci-current", "ci-current")], True),
