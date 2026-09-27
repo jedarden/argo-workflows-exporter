@@ -255,6 +255,69 @@ def test_local_request_uses_the_service_account_and_passes_the_timeout(
     }
 
 
+def test_local_polling_reloads_projected_token_and_ca_after_rotation(
+    tmp_path, monkeypatch
+):
+    """A running exporter observes the next projected credential revision."""
+    token_path = tmp_path / "token"
+    token_path.write_text("token-before\n")
+    ca_path = tmp_path / "ca.crt"
+    ca_path.write_text("certificate-before")
+    monkeypatch.setattr(k8s_api, "_SA_TOKEN_PATH", str(token_path))
+    monkeypatch.setattr(k8s_api, "_SA_CA_PATH", str(ca_path))
+
+    observed_credentials = []
+    pages = iter(
+        [
+            {"items": [{"name": "before-rotation"}], "metadata": {}},
+            {"items": [{"name": "after-rotation"}], "metadata": {}},
+        ]
+    )
+
+    def rotate(path, contents):
+        replacement = path.with_name(f"{path.name}.next")
+        replacement.write_text(contents)
+        replacement.replace(path)
+
+    def fake_get(url, params=None, **kwargs):
+        with open(kwargs["verify"], encoding="utf-8") as ca_file:
+            ca_contents = ca_file.read()
+        observed_credentials.append(
+            {
+                "token": kwargs["headers"]["Authorization"].removeprefix("Bearer "),
+                "ca": ca_contents,
+                "verify": kwargs["verify"],
+            }
+        )
+        if len(observed_credentials) == 1:
+            rotate(token_path, "token-after\n")
+            rotate(ca_path, "certificate-after")
+        return SimpleNamespace(status_code=200, json=lambda: next(pages))
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+    local = Cluster(name="local")
+
+    first_items, first_complete = list_items(local, "/p", 17, 2)
+    second_items, second_complete = list_items(local, "/p", 17, 2)
+
+    assert first_complete is True
+    assert second_complete is True
+    assert first_items == [{"name": "before-rotation"}]
+    assert second_items == [{"name": "after-rotation"}]
+    assert observed_credentials == [
+        {
+            "token": "token-before",
+            "ca": "certificate-before",
+            "verify": str(ca_path),
+        },
+        {
+            "token": "token-after",
+            "ca": "certificate-after",
+            "verify": str(ca_path),
+        },
+    ]
+
+
 @pytest.mark.parametrize("missing", ["token", "ca"])
 def test_fetch_json_returns_none_when_in_cluster_credentials_are_missing(
     tmp_path, monkeypatch, missing

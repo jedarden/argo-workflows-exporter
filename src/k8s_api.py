@@ -31,6 +31,10 @@ class KubernetesResponseError(ValueError):
 
 
 def _local_request(path: str, params: dict, timeout: int) -> requests.Response:
+    # Kubernetes refreshes projected ServiceAccount files by atomically
+    # switching the volume's symlink. Open the token and validate the CA path
+    # for every request rather than caching either credential: a long-lived
+    # exporter must observe the next projection without a process restart.
     with open(_SA_TOKEN_PATH, encoding="utf-8") as f:
         token = f.read().strip()
     if not token:

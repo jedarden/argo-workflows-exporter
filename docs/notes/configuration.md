@@ -40,6 +40,26 @@ than the cluster it watches and reaches every target over a proxy. More than
 one entry without a `base_url` is rejected — "local" means this pod's own
 ServiceAccount, and there is only one of those.
 
+### Local ServiceAccount credential rotation
+
+For a local entry, the exporter uses the projected files at
+`/var/run/secrets/kubernetes.io/serviceaccount/token` and
+`/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`. The Kubernetes kubelet
+refreshes projected ServiceAccount material by atomically switching the
+projection to a new revision. The exporter therefore opens the token file and
+checks the CA file for every API request, and passes the CA path to
+`requests.get` for that request's TLS setup. It does not cache token contents,
+CA bytes, a `requests.Session`, or a TLS context, so rotation is picked up by
+the next request without restarting the process.
+
+The token and CA used by a request may be from either the old or new revision
+while a rotation is occurring; both are valid projected revisions. If a
+request sees a missing or empty file, an expired/rejected token, or a TLS
+failure while the projection is changing, that request is treated as a failed
+page. The current listing is discarded, the cluster is marked unavailable for
+that cycle, and the normal next poll retries with the current projection.
+Remote `base_url` clusters do not use these files or this rotation behavior.
+
 ## Scope
 
 | Variable | Default | Notes |
