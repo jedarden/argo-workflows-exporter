@@ -10,18 +10,32 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pyarrow as pa
 import pytest
 
 from src import consumer, meta_schema, parquet_io
 
 
 FIXTURE_PATH = Path(__file__).with_name("fixtures") / "generation_consistency.json"
+SCHEMA_EVOLUTION_FIXTURE_PATH = (
+    Path(__file__).with_name("fixtures") / "parquet_schema_evolution.json"
+)
 _C_MAX_SECONDS = 60
 _AT_STALE_BOUNDARY = datetime(2026, 9, 27, 11, 56, tzinfo=timezone.utc)
+
+_FIXTURE_TYPES = {
+    "string": pa.string(),
+    "int32": pa.int32(),
+    "int64": pa.int64(),
+}
 
 
 def _load_fixtures():
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def _load_schema_evolution_fixtures():
+    return json.loads(SCHEMA_EVOLUTION_FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
 def _materialize(case):
@@ -41,9 +55,110 @@ def _materialize(case):
     )
 
 
+def _fixture_schema(file_fixture):
+    return pa.schema(
+        [
+            (field["name"], _FIXTURE_TYPES[field["type"]])
+            for field in file_fixture["schema"]
+        ]
+    )
+
+
+def _materialize_schema_evolution_file(release, output, fixtures):
+    file_fixture = fixtures[release][output]
+    schema = _fixture_schema(file_fixture)
+    return parquet_io.table_to_parquet_bytes(
+        file_fixture["rows"], schema, fixtures[release]["generation_id"]
+    )
+
+
+def _schema_evolution_publication(release, fixtures):
+    return consumer.Publication(
+        meta={"generation_id": fixtures[release]["generation_id"]},
+        workflows=_materialize_schema_evolution_file(release, "workflows", fixtures),
+        runs=_materialize_schema_evolution_file(release, "runs", fixtures),
+    )
+
+
 @pytest.fixture(scope="module")
 def fixtures():
     return _load_fixtures()
+
+
+@pytest.fixture(scope="module")
+def schema_evolution_fixtures():
+    return _load_schema_evolution_fixtures()
+
+
+@pytest.mark.parametrize("release", ["older", "newer"])
+@pytest.mark.parametrize(
+    ("output", "schema"),
+    [("workflows", parquet_io.WORKFLOWS_SCHEMA), ("runs", parquet_io.RUNS_SCHEMA)],
+    ids=["workflows", "runs"],
+)
+def test_consumer_normalizes_each_cross_release_file(
+    schema_evolution_fixtures, release, output, schema
+):
+    """Each downloaded object is normalized before a consumer uses its rows."""
+    stored = _materialize_schema_evolution_file(release, output, schema_evolution_fixtures)
+    table = parquet_io.parquet_bytes_to_table(stored, schema)
+
+    assert table.schema == schema
+    assert table.column_names == schema.names
+    assert all(
+        table.column(name).type == schema.field(name).type for name in schema.names
+    )
+    assert "retired_column" not in table.column_names
+
+    [row] = table.to_pylist()
+    expected_uid = f"{'wf' if output == 'workflows' else 'run'}-{release}"
+    assert row["uid"] == expected_uid
+    assert row["duration_seconds"] == (42 if release == "older" else 84)
+
+    if release == "older":
+        # These fields did not exist in the older file. The null arrays must
+        # still carry the current declared type so concatenation is safe.
+        for name in ("failure_fingerprint", "failure_class"):
+            assert table.column(name).type == pa.string()
+            assert table.column(name).to_pylist() == [None]
+    else:
+        assert row["failure_fingerprint"]
+        assert row["failure_class"]
+
+
+def test_schema_normalization_does_not_depend_on_generation_pairing(
+    schema_evolution_fixtures,
+):
+    """A torn pair is rejected, but each object's schema remains readable."""
+    older = _schema_evolution_publication("older", schema_evolution_fixtures)
+    newer = _schema_evolution_publication("newer", schema_evolution_fixtures)
+    mixed = consumer.Publication(
+        meta=older.meta,
+        workflows=older.workflows,
+        runs=newer.runs,
+    )
+
+    assert consumer.generation_ids(mixed) == {
+        "meta": schema_evolution_fixtures["older"]["generation_id"],
+        "workflows": schema_evolution_fixtures["older"]["generation_id"],
+        "runs": schema_evolution_fixtures["newer"]["generation_id"],
+    }
+    assert consumer.is_complete_generation(mixed) is False
+    assert consumer.select_generation(mixed, older) is older
+
+    # Pairing is a publication-integrity check, not a prerequisite for schema
+    # conformance. A reader can normalize either object independently while it
+    # retains the last complete pair.
+    old_workflows = parquet_io.parquet_bytes_to_table(
+        mixed.workflows, parquet_io.WORKFLOWS_SCHEMA
+    )
+    new_runs = parquet_io.parquet_bytes_to_table(mixed.runs, parquet_io.RUNS_SCHEMA)
+    assert old_workflows.schema == parquet_io.WORKFLOWS_SCHEMA
+    assert new_runs.schema == parquet_io.RUNS_SCHEMA
+    assert old_workflows.column("failure_class").to_pylist() == [None]
+    assert new_runs.column("failure_class").to_pylist() == ["test_failure"]
+    assert "retired_column" not in old_workflows.column_names
+    assert "retired_column" not in new_runs.column_names
 
 
 @pytest.mark.parametrize(

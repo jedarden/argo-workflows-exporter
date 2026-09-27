@@ -1,0 +1,100 @@
+{
+  "older": {
+    "description": "A pre-taxonomy release omitted the two failure columns and stored counters as int32 in a different order.",
+    "generation_id": "2026-09-26T10:00:00Z-aaaaaaaaaaaa",
+    "workflows": {
+      "schema": [
+        {"name": "observed_at", "type": "string"},
+        {"name": "resources_duration_cpu", "type": "int32"},
+        {"name": "duration_seconds", "type": "int32"},
+        {"name": "phase", "type": "string"},
+        {"name": "cluster", "type": "string"},
+        {"name": "uid", "type": "string"}
+      ],
+      "rows": [
+        {
+          "observed_at": "2026-09-26T10:00:00Z",
+          "resources_duration_cpu": 12,
+          "duration_seconds": 42,
+          "phase": "Running",
+          "cluster": "ci",
+          "uid": "wf-older"
+        }
+      ]
+    },
+    "runs": {
+      "schema": [
+        {"name": "last_seen_at", "type": "string"},
+        {"name": "first_seen_at", "type": "string"},
+        {"name": "duration_seconds", "type": "int32"},
+        {"name": "phase", "type": "string"},
+        {"name": "cluster", "type": "string"},
+        {"name": "uid", "type": "string"}
+      ],
+      "rows": [
+        {
+          "last_seen_at": "2026-09-26T10:05:00Z",
+          "first_seen_at": "2026-09-26T10:00:00Z",
+          "duration_seconds": 42,
+          "phase": "Succeeded",
+          "cluster": "ci",
+          "uid": "run-older"
+        }
+      ]
+    }
+  },
+  "newer": {
+    "description": "A later release reordered fields, retained a removed field, and carries the nullable failure taxonomy.",
+    "generation_id": "2026-09-27T10:00:00Z-bbbbbbbbbbbb",
+    "workflows": {
+      "schema": [
+        {"name": "retired_column", "type": "string"},
+        {"name": "failure_class", "type": "string"},
+        {"name": "duration_seconds", "type": "int32"},
+        {"name": "failure_fingerprint", "type": "string"},
+        {"name": "observed_at", "type": "string"},
+        {"name": "phase", "type": "string"},
+        {"name": "cluster", "type": "string"},
+        {"name": "uid", "type": "string"}
+      ],
+      "rows": [
+        {
+          "retired_column": "drop-me",
+          "failure_class": "build",
+          "duration_seconds": 84,
+          "failure_fingerprint": "8f49197fbc86",
+          "observed_at": "2026-09-27T10:00:00Z",
+          "phase": "Failed",
+          "cluster": "ci",
+          "uid": "wf-newer"
+        }
+      ]
+    },
+    "runs": {
+      "schema": [
+        {"name": "retired_column", "type": "string"},
+        {"name": "failure_class", "type": "string"},
+        {"name": "last_seen_at", "type": "string"},
+        {"name": "duration_seconds", "type": "int32"},
+        {"name": "failure_fingerprint", "type": "string"},
+        {"name": "first_seen_at", "type": "string"},
+        {"name": "phase", "type": "string"},
+        {"name": "cluster", "type": "string"},
+        {"name": "uid", "type": "string"}
+      ],
+      "rows": [
+        {
+          "retired_column": "drop-me-too",
+          "failure_class": "test_failure",
+          "last_seen_at": "2026-09-27T10:05:00Z",
+          "duration_seconds": 84,
+          "failure_fingerprint": "7e2e00d6f5a1",
+          "first_seen_at": "2026-09-27T10:00:00Z",
+          "phase": "Failed",
+          "cluster": "ci",
+          "uid": "run-newer"
+        }
+      ]
+    }
+  }
+}
