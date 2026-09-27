@@ -74,6 +74,18 @@ All numeric variables must parse as integers greater than zero.
   successful complete listings; rows from this cluster's previous successful
   snapshot are not carried forward. Its existing ledger rows are untouched and
   expire on the usual retention schedule.
+- **A cluster removed from `CLUSTERS_JSON`** — this is a configuration change,
+  not evidence that its runs should be deleted. The removed name disappears
+  from new snapshots and `meta.json`, while its existing `runs.parquet` rows
+  remain unchanged and expire naturally `RUN_RETENTION_DAYS` after their
+  `last_seen_at`. There is no early purge or removed-cluster annotation, so
+  consumers should expect those historical rows under the old name until
+  normal retention removes them.
+- **A cluster renamed in `CLUSTERS_JSON`** — cluster name is part of the
+  ledger key, so a rename is not treated as an identity migration. Rows under
+  the old name remain until their normal retention expiry, and observations
+  under the new name accumulate as new `(cluster, uid)` identities. Consumers
+  must not combine the names unless they maintain that aliasing themselves.
 - **A partial listing** (page 2 of 3 fails) is treated as a failure for that
   cluster, not as a short list. Items already received are discarded along with
   that cluster's prior snapshot rows. A consumer reads a missing workflow as a

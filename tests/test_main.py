@@ -800,6 +800,93 @@ def test_unreachable_cluster_ledger_rows_follow_last_seen_retention(monkeypatch)
     assert _paired(meta, workflows_bytes, runs_bytes)
 
 
+def test_removed_cluster_ledger_rows_are_kept_until_natural_expiry(monkeypatch):
+    """Removing a cluster from config does not erase its retained ledger history."""
+    generated_at = "2026-09-27T12:00:00Z"
+    cutoff = "2026-09-20T00:00:00Z"
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: cutoff)
+    _list(monkeypatch, {"healthy": ([_workflow("healthy-current", "healthy")], True)})
+
+    prior_runs = [
+        {
+            "uid": "removed-retained",
+            "cluster": "removed",
+            "phase": "Failed",
+            "first_seen_at": "2026-09-10T10:00:00Z",
+            "last_seen_at": cutoff,
+        },
+        {
+            "uid": "removed-expired",
+            "cluster": "removed",
+            "phase": "Succeeded",
+            "first_seen_at": "2026-09-09T10:00:00Z",
+            "last_seen_at": "2026-09-19T23:59:59Z",
+        },
+    ]
+    s3 = _MemoryS3(
+        {
+            "argo/data/runs.parquet": parquet_io.table_to_parquet_bytes(
+                prior_runs, parquet_io.RUNS_SCHEMA
+            )
+        }
+    )
+
+    assert main._run_cycle(_config([Cluster(name="healthy")]), s3) is True
+
+    runs = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
+    ).to_pylist()
+    assert {(row["cluster"], row["uid"]) for row in runs} == {
+        ("healthy", "healthy-current"),
+        ("removed", "removed-retained"),
+    }
+    retained = next(row for row in runs if row["uid"] == "removed-retained")
+    assert retained["last_seen_at"] == cutoff
+
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    assert [stat["name"] for stat in meta["clusters"]] == ["healthy"]
+
+
+def test_renamed_cluster_accumulates_new_identity_and_keeps_old_ledger_rows(monkeypatch):
+    old_generated_at = "2026-09-27T12:00:00Z"
+    new_generated_at = "2026-09-27T12:05:00Z"
+    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-20T00:00:00Z")
+    s3 = _MemoryS3()
+
+    monkeypatch.setattr(main, "_now", lambda: old_generated_at)
+    _list(monkeypatch, {"old-name": ([_workflow("same-workflow", "old")], True)})
+    assert main._run_cycle(_config([Cluster(name="old-name")]), s3) is True
+
+    monkeypatch.setattr(main, "_now", lambda: new_generated_at)
+    _list(monkeypatch, {"new-name": ([_workflow("same-workflow", "new")], True)})
+    assert main._run_cycle(_config([Cluster(name="new-name")]), s3) is True
+
+    snapshot = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/workflows.parquet"], parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    assert {(row["cluster"], row["uid"]) for row in snapshot} == {
+        ("new-name", "same-workflow")
+    }
+
+    runs = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
+    ).to_pylist()
+    runs_by_key = {(row["cluster"], row["uid"]): row for row in runs}
+    assert set(runs_by_key) == {
+        ("old-name", "same-workflow"),
+        ("new-name", "same-workflow"),
+    }
+    assert runs_by_key["old-name", "same-workflow"]["first_seen_at"] == old_generated_at
+    assert runs_by_key["old-name", "same-workflow"]["last_seen_at"] == old_generated_at
+    assert runs_by_key["new-name", "same-workflow"]["first_seen_at"] == new_generated_at
+    assert runs_by_key["new-name", "same-workflow"]["last_seen_at"] == new_generated_at
+
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    assert [stat["name"] for stat in meta["clusters"]] == ["new-name"]
+    assert meta["runs"] == 2
+
+
 _GENERATED_AT = "2026-09-23T19:00:00Z"
 _OLD_GEN = f"{_GENERATED_AT}-000000aaaaaa"
 _NEW_GENERATED_AT = "2026-09-23T19:01:00Z"

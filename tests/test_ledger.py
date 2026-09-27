@@ -191,6 +191,63 @@ def test_retention_is_decided_per_cluster_and_uid():
     assert [(r["cluster"], r["uid"]) for r in kept] == [("ci", "shared")]
 
 
+def test_removed_cluster_rows_follow_natural_retention(monkeypatch):
+    """Stopping observations for a removed config entry does not purge history early."""
+    cutoff = "2026-09-16T12:00:00Z"
+    monkeypatch.setattr("src.ledger._cutoff", lambda retention_days: cutoff)
+    removed_retained = {
+        "uid": "removed-retained",
+        "cluster": "removed",
+        "phase": "Failed",
+        "first_seen_at": "2026-09-10T10:00:00Z",
+        "last_seen_at": cutoff,
+    }
+    removed_expired = {
+        "uid": "removed-expired",
+        "cluster": "removed",
+        "phase": "Succeeded",
+        "first_seen_at": "2026-09-09T10:00:00Z",
+        "last_seen_at": "2026-09-16T11:59:59Z",
+    }
+
+    kept = merge(
+        [removed_retained, removed_expired],
+        [],
+        "2026-09-23T12:00:00Z",
+        7,
+    )
+
+    assert [(row["cluster"], row["uid"]) for row in kept] == [
+        ("removed", "removed-retained")
+    ]
+    assert kept[0]["last_seen_at"] == cutoff
+
+
+def test_renamed_cluster_starts_a_new_identity_and_keeps_old_history():
+    old_seen_at = _ts(1)
+    new_seen_at = _ts(0)
+    old_name = merge(
+        [],
+        [_observed(uid="same-workflow", cluster="old")],
+        old_seen_at,
+        7,
+    )
+
+    kept = merge(
+        old_name,
+        [_observed(uid="same-workflow", cluster="new")],
+        new_seen_at,
+        7,
+    )
+
+    rows = {(row["cluster"], row["uid"]): row for row in kept}
+    assert set(rows) == {("old", "same-workflow"), ("new", "same-workflow")}
+    assert rows["old", "same-workflow"]["first_seen_at"] == old_seen_at
+    assert rows["old", "same-workflow"]["last_seen_at"] == old_seen_at
+    assert rows["new", "same-workflow"]["first_seen_at"] == new_seen_at
+    assert rows["new", "same-workflow"]["last_seen_at"] == new_seen_at
+
+
 def test_output_is_ordered_deterministically():
     rows = [
         {"uid": "b", "first_seen_at": "2026-08-11T02:00:00Z", "last_seen_at": _ts(0)},
