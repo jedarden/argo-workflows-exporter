@@ -1,6 +1,9 @@
 import pyarrow as pa
 import pyarrow.parquet as pq
 import io
+import json
+from pathlib import Path
+
 import pytest
 
 from src.parquet_io import (
@@ -219,6 +222,14 @@ _PRE_TAXONOMY_RUNS_SCHEMA = pa.schema(
 )
 
 
+def _legacy_runs_fixture():
+    return json.loads(
+        (Path(__file__).with_name("fixtures") / "runs_pre_taxonomy.json").read_text(
+            encoding="utf-8"
+        )
+    )["rows"]
+
+
 def test_a_ledger_file_from_before_the_failure_taxonomy_reads_back_current():
     """The stored object must survive an upgrade on the first cycle that reads
     it — exercised through parquet_bytes_to_table, the path a cycle actually
@@ -248,6 +259,22 @@ def test_a_ledger_file_from_before_the_failure_taxonomy_reads_back_current():
     # the columns the upgrade added arrive as nulls, not as an error
     assert row["failure_fingerprint"] is None
     assert row["failure_class"] is None
+
+
+def test_a_stored_legacy_fixture_is_republished_with_the_current_schema():
+    """A real old-file-shaped payload upgrades without losing either row."""
+    stored = table_to_parquet_bytes(_legacy_runs_fixture(), _PRE_TAXONOMY_RUNS_SCHEMA)
+
+    upgraded = parquet_bytes_to_table(stored, RUNS_SCHEMA)
+    rewritten = table_to_parquet_bytes(upgraded.to_pylist(), RUNS_SCHEMA)
+
+    assert pq.read_schema(io.BytesIO(rewritten)) == RUNS_SCHEMA
+    rows = {row["uid"]: row for row in parquet_bytes_to_table(rewritten, RUNS_SCHEMA).to_pylist()}
+    assert set(rows) == {"wf-reobserved", "wf-preserved"}
+    assert rows["wf-preserved"]["phase"] == "Succeeded"
+    assert rows["wf-preserved"]["last_seen_at"] == "2026-09-24T11:01:05Z"
+    assert rows["wf-preserved"]["failure_fingerprint"] is None
+    assert rows["wf-preserved"]["failure_class"] is None
 
 
 def test_a_stored_column_the_schema_dropped_is_dropped_and_its_neighbors_survive():

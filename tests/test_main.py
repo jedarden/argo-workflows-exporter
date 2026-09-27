@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import pyarrow as pa
 from botocore.exceptions import ClientError
 
 from src import k8s_api, ledger, main, meta_schema, parquet_io, s3io, workflows
@@ -562,6 +563,65 @@ def _one_cluster_state(monkeypatch, s3):
     _list(monkeypatch, {"ci": ([_workflow("wf-new", "wf-new")], True)})
     monkeypatch.setattr(main, "_now", lambda: _NEW_GENERATED_AT)
     return main._run_cycle(_config([Cluster(name="ci")]), s3)
+
+
+def test_cycle_upgrades_a_legacy_runs_fixture_and_publishes_current_schema(monkeypatch):
+    """The first cycle after a schema release upgrades the stored ledger."""
+    legacy_schema = pa.schema(
+        [
+            field
+            for field in parquet_io.RUNS_SCHEMA
+            if field.name not in ("failure_fingerprint", "failure_class")
+        ]
+    )
+    fixture = json.loads(
+        (Path(__file__).with_name("fixtures") / "runs_pre_taxonomy.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    generated_at = "2026-09-27T12:00:00Z"
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-01T00:00:00Z")
+    _list(
+        monkeypatch,
+        {
+            "ci": (
+                [
+                    _workflow(
+                        "wf-reobserved",
+                        "legacy-build-abcde",
+                        phase="Failed",
+                        message="error: test command failed",
+                    )
+                ],
+                True,
+            )
+        },
+    )
+    s3 = _MemoryS3(
+        {
+            "argo/data/runs.parquet": parquet_io.table_to_parquet_bytes(
+                fixture["rows"], legacy_schema
+            )
+        }
+    )
+
+    assert main._run_cycle(_config([Cluster(name="ci")]), s3) is True
+
+    stored = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
+    )
+    assert stored.schema == parquet_io.RUNS_SCHEMA
+    rows = {row["uid"]: row for row in stored.to_pylist()}
+    assert set(rows) == {"wf-reobserved", "wf-preserved"}
+    assert rows["wf-reobserved"]["first_seen_at"] == "2026-09-25T10:00:05Z"
+    assert rows["wf-reobserved"]["last_seen_at"] == generated_at
+    assert rows["wf-reobserved"]["failure_fingerprint"] is not None
+    assert rows["wf-reobserved"]["failure_class"] == "unknown"
+    assert rows["wf-preserved"]["phase"] == "Succeeded"
+    assert rows["wf-preserved"]["last_seen_at"] == "2026-09-24T11:01:05Z"
+    assert rows["wf-preserved"]["failure_fingerprint"] is None
+    assert rows["wf-preserved"]["failure_class"] is None
 
 
 def _prior_generation():
