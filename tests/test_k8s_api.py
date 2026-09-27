@@ -255,6 +255,68 @@ def test_local_request_uses_the_service_account_and_passes_the_timeout(
     }
 
 
+@pytest.mark.parametrize("missing", ["token", "ca"])
+def test_fetch_json_returns_none_when_in_cluster_credentials_are_missing(
+    tmp_path, monkeypatch, missing
+):
+    token_path = tmp_path / "token"
+    ca_path = tmp_path / "ca.crt"
+    if missing != "token":
+        token_path.write_text("sa-token\n")
+    if missing != "ca":
+        ca_path.write_text("certificate")
+    monkeypatch.setattr(k8s_api, "_SA_TOKEN_PATH", str(token_path))
+    monkeypatch.setattr(k8s_api, "_SA_CA_PATH", str(ca_path))
+
+    def unexpected_get(*args, **kwargs):
+        raise AssertionError("missing in-cluster credentials must prevent HTTP")
+
+    monkeypatch.setattr(k8s_api.requests, "get", unexpected_get)
+
+    assert fetch_json(Cluster(name="local"), "/p", 17) is None
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_fetch_json_returns_none_for_local_authentication_failures(
+    tmp_path, monkeypatch, status_code
+):
+    token_path = tmp_path / "token"
+    token_path.write_text("sa-token\n")
+    ca_path = tmp_path / "ca.crt"
+    ca_path.write_text("certificate")
+    monkeypatch.setattr(k8s_api, "_SA_TOKEN_PATH", str(token_path))
+    monkeypatch.setattr(k8s_api, "_SA_CA_PATH", str(ca_path))
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return SimpleNamespace(status_code=status_code)
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+
+    assert fetch_json(Cluster(name="local"), "/p", 17) is None
+    assert calls[0][0] == "https://kubernetes.default.svc/p"
+    assert calls[0][1]["headers"] == {"Authorization": "Bearer sa-token"}
+    assert calls[0][1]["verify"] == str(ca_path)
+
+
+def test_fetch_json_returns_none_for_local_tls_failures(tmp_path, monkeypatch):
+    token_path = tmp_path / "token"
+    token_path.write_text("sa-token\n")
+    ca_path = tmp_path / "ca.crt"
+    ca_path.write_text("certificate")
+    monkeypatch.setattr(k8s_api, "_SA_TOKEN_PATH", str(token_path))
+    monkeypatch.setattr(k8s_api, "_SA_CA_PATH", str(ca_path))
+
+    def fake_get(*args, **kwargs):
+        raise k8s_api.requests.exceptions.SSLError("certificate verify failed")
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+
+    assert fetch_json(Cluster(name="local"), "/p", 17) is None
+
+
 @pytest.mark.parametrize(
     ("cluster", "expected_url", "expected_headers"),
     [

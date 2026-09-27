@@ -31,8 +31,18 @@ class KubernetesResponseError(ValueError):
 
 
 def _local_request(path: str, params: dict, timeout: int) -> requests.Response:
-    with open(_SA_TOKEN_PATH) as f:
+    with open(_SA_TOKEN_PATH, encoding="utf-8") as f:
         token = f.read().strip()
+    if not token:
+        raise OSError(f"in-cluster ServiceAccount token is empty: {_SA_TOKEN_PATH}")
+
+    # `requests` reads the CA bundle during TLS setup. Read one byte here as
+    # well so a missing or empty projected credential is reported through the
+    # same request-failure path before any HTTP request is attempted.
+    with open(_SA_CA_PATH, "rb") as f:
+        if not f.read(1):
+            raise OSError(f"in-cluster CA bundle is empty: {_SA_CA_PATH}")
+
     return requests.get(
         f"{_LOCAL_API_SERVER}{path}",
         params=params,
@@ -55,7 +65,7 @@ def fetch_json(cluster: Cluster, path: str, timeout: int, params: dict | None = 
             resp = _local_request(path, params or {}, timeout)
         else:
             resp = requests.get(f"{cluster.base_url}{path}", params=params or {}, timeout=timeout)
-    except requests.RequestException as e:
+    except (requests.RequestException, OSError) as e:
         log.warning("%s: request failed for %s: %s", cluster.name, path, e)
         return None
 
