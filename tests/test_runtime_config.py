@@ -130,6 +130,51 @@ def test_loaded_http_and_version_settings_reach_a_published_generation(
     assert meta["workflows"] == 3
 
 
+def test_loaded_http_timeout_reaches_local_and_proxied_requests(monkeypatch, tmp_path):
+    _set_env(
+        monkeypatch,
+        tmp_path,
+        CLUSTERS_JSON=(
+            '[{"name": "local"}, '
+            '{"name": "remote", "base_url": "http://proxy.example:8001"}]'
+        ),
+    )
+    token_path = tmp_path / "token"
+    token_path.write_text("fixture-token\n")
+    ca_path = tmp_path / "ca.crt"
+    ca_path.write_text("fixture-certificate")
+    monkeypatch.setattr(k8s_api, "_SA_TOKEN_PATH", str(token_path))
+    monkeypatch.setattr(k8s_api, "_SA_CA_PATH", str(ca_path))
+
+    cfg = config.load()
+    calls = []
+
+    def fake_get(url, params=None, **kwargs):
+        calls.append((url, dict(params or {}), kwargs))
+        cluster = "local" if url.startswith("https://kubernetes.default.svc") else "remote"
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "items": [_workflow(f"{cluster}-workflow", cluster)],
+                "metadata": {},
+            },
+        )
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+
+    assert main._run_cycle(cfg, _FirstRunS3()) is True
+    assert cfg.http_timeout_seconds == 13
+    assert [url for url, _, _ in calls] == [
+        "https://kubernetes.default.svc/apis/argoproj.io/v1alpha1/workflows",
+        "http://proxy.example:8001/apis/argoproj.io/v1alpha1/workflows",
+    ]
+    assert [params for _, params, _ in calls] == [{"limit": 2}, {"limit": 2}]
+    assert [kwargs["timeout"] for _, _, kwargs in calls] == [13, 13]
+    assert calls[0][2]["headers"] == {"Authorization": "Bearer fixture-token"}
+    assert calls[0][2]["verify"] == str(ca_path)
+    assert set(calls[1][2]) == {"timeout"}
+
+
 def test_loaded_poll_interval_controls_waiting_and_health_staleness(
     monkeypatch, tmp_path
 ):
