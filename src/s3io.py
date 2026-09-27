@@ -30,11 +30,11 @@ def client(endpoint: S3Endpoint):
 
 
 def download_bytes(s3, bucket: str, key: str):
-    """Returns the object body, or None if it doesn't exist yet (first run)."""
+    """Returns the object body, or None for an actual missing-key response."""
     try:
         return s3.get_object(Bucket=bucket, Key=key)["Body"].read()
     except ClientError as e:
-        if e.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+        if e.response.get("Error", {}).get("Code") == "NoSuchKey":
             return None
         raise
 

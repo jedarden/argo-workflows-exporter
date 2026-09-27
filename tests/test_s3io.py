@@ -5,7 +5,7 @@ back to whatever the installed botocore version happens to default to."""
 import io
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ReadTimeoutError
 
 from src import main, s3io, workflows
 from src.config import Cluster, Config, S3Endpoint
@@ -71,18 +71,17 @@ def test_download_bytes_reads_the_requested_object():
     assert calls == [{"Bucket": "bucket", "Key": "argo/data/runs.parquet"}]
 
 
-@pytest.mark.parametrize("code", ["NoSuchKey", "404"])
-def test_download_bytes_treats_a_missing_runs_object_as_a_first_run(code):
+def test_download_bytes_treats_nosuchkey_as_a_missing_runs_object_on_first_run():
     class S3:
         def get_object(self, **kwargs):
             raise ClientError(
-                {"Error": {"Code": code, "Message": "missing"}}, "GetObject"
+                {"Error": {"Code": "NoSuchKey", "Message": "missing"}}, "GetObject"
             )
 
     assert s3io.download_bytes(S3(), "bucket", "argo/data/runs.parquet") is None
 
 
-@pytest.mark.parametrize("code", ["AccessDenied", "InternalError"])
+@pytest.mark.parametrize("code", ["404", "AccessDenied", "InternalError"])
 def test_download_bytes_propagates_non_missing_client_errors(code):
     error = ClientError(
         {"Error": {"Code": code, "Message": "injected"}}, "GetObject"
@@ -93,6 +92,19 @@ def test_download_bytes_propagates_non_missing_client_errors(code):
             raise error
 
     with pytest.raises(ClientError) as raised:
+        s3io.download_bytes(S3(), "bucket", "argo/data/runs.parquet")
+
+    assert raised.value is error
+
+
+def test_download_bytes_propagates_read_timeouts():
+    error = ReadTimeoutError(endpoint_url="http://s3.example", error="injected")
+
+    class S3:
+        def get_object(self, **kwargs):
+            raise error
+
+    with pytest.raises(ReadTimeoutError) as raised:
         s3io.download_bytes(S3(), "bucket", "argo/data/runs.parquet")
 
     assert raised.value is error

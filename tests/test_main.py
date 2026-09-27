@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 import pyarrow as pa
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ReadTimeoutError
 
 from src import k8s_api, ledger, main, meta_schema, parquet_io, s3io, workflows
 from src.config import Cluster, Config, S3Endpoint
@@ -58,12 +58,16 @@ class _FailNthPut(_MemoryS3):
 
 
 class _FailGet(_MemoryS3):
-    """Fails get_object with a non-404 error: an outage, not a first run."""
+    """Fails get_object with an injected error, not a first-run miss."""
 
-    def get_object(self, Bucket, Key):
-        raise ClientError(
+    def __init__(self, objects=None, error=None):
+        super().__init__(objects)
+        self.error = error or ClientError(
             {"Error": {"Code": "InternalError", "Message": "injected"}}, "GetObject"
         )
+
+    def get_object(self, Bucket, Key):
+        raise self.error
 
 
 class _RecordingS3(_MemoryS3):
@@ -1059,11 +1063,54 @@ def test_failed_meta_upload_leaves_both_parquets_on_the_new_generation(monkeypat
     assert {row["uid"] for row in runs.to_pylist()} == {"wf-old", "wf-new"}
 
 
-def test_failed_ledger_download_writes_nothing_at_all(monkeypatch):
-    s3 = _FailGet(_prior_generation())
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(
+            ClientError(
+                {"Error": {"Code": "404", "Message": "injected"}}, "GetObject"
+            ),
+            id="generic-404",
+        ),
+        pytest.param(
+            ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "injected"}},
+                "GetObject",
+            ),
+            id="authentication-failure",
+        ),
+        pytest.param(
+            ReadTimeoutError(endpoint_url="http://s3.example", error="injected"),
+            id="timeout",
+        ),
+        pytest.param(
+            ClientError(
+                {"Error": {"Code": "InternalError", "Message": "injected"}},
+                "GetObject",
+            ),
+            id="server-error",
+        ),
+    ],
+)
+def test_failed_ledger_read_writes_nothing_at_all(monkeypatch, error):
+    s3 = _FailGet(_prior_generation(), error=error)
     before = dict(s3.objects)
 
-    with pytest.raises(ClientError):
+    with pytest.raises(type(error)) as raised:
+        _one_cluster_state(monkeypatch, s3)
+
+    assert raised.value is error
+    assert s3.objects == before
+    assert s3.puts == 0
+
+
+def test_malformed_ledger_object_writes_nothing_at_all(monkeypatch):
+    objects = _prior_generation()
+    objects["argo/data/runs.parquet"] = b"not parquet"
+    s3 = _MemoryS3(objects)
+    before = dict(s3.objects)
+
+    with pytest.raises(pa.ArrowInvalid):
         _one_cluster_state(monkeypatch, s3)
 
     assert s3.objects == before
