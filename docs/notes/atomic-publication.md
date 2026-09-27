@@ -77,6 +77,30 @@ phase depends on anything the publish phase wrote, and every upload is a PUT
 of a complete object under a key that gets fully overwritten, so the cycle
 is safe to re-run from the top as many times as it fails.
 
+## Single-writer contract
+
+The read-modify-write of `runs.parquet` assumes that exactly one exporter
+process writes a given S3 prefix. This is a deployment invariant, not a lock
+provided by S3 or by `generation_id`.
+
+If two processes poll the same clusters and prefix concurrently, both can
+download the same old ledger and then upload a different fold of it. The last
+`runs.parquet` PUT wins, so observations and `last_seen_at` refreshes from the
+other process can be silently lost. Their publish phases can also interleave,
+leaving different generation ids across the three objects. Consumers can
+detect that latter torn state by checking generation ids, but they cannot
+recover ledger rows lost by the concurrent read-modify-write.
+
+The GitOps Deployment therefore enforces this contract with
+`replicas: 1` and `strategy.type: Recreate`. Recreate terminates the old pod
+before Kubernetes starts its replacement, so a normal update cannot briefly
+run old and new exporters against the same prefix. A second Deployment, a
+manually started exporter, or scaling this Deployment above one replica is
+unsupported when it uses the same prefix. Operators that need independent
+writers must give them different prefixes. During the intentional hand-off,
+the last complete generation remains available and the replacement resumes by
+reading that ledger from S3.
+
 ## Retries
 
 Retries exist at two layers, and neither one retries a *publication*:

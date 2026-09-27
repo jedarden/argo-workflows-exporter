@@ -101,6 +101,8 @@ dockerfile = Path(dockerfile_path).read_text(encoding="utf-8")
 assert deployment["apiVersion"] == "apps/v1"
 assert deployment["kind"] == "Deployment"
 assert deployment["metadata"]["name"] == "argo-workflows-exporter"
+assert deployment["spec"]["replicas"] == 1
+assert deployment["spec"]["strategy"]["type"] == "Recreate"
 
 pod = deployment["spec"]["template"]["spec"]
 containers = pod["containers"]
@@ -165,6 +167,7 @@ assert 'http://localhost:${HEALTH_PORT}/health' in dockerfile
 assert 'CMD ["python", "-m", "src.main"]' in dockerfile
 
 print(f"ok: GitOps deployment uses pinned image {image}")
+print("ok: Deployment enforces a single writer with one replica and Recreate updates")
 print("ok: ConfigMap and dashboard-s3-credentials supply the required runtime environment")
 print("ok: health port 8080 and /health liveness/readiness probes are wired")
 print("ok: build WorkflowTemplate tests the checkout and publishes a semver image")
