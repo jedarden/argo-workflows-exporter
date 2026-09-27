@@ -139,6 +139,18 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
+To verify the built image and the live GitOps Deployment contract (including
+the referenced S3 secret and `/health` probes), run this from a checkout that
+also has `declarative-config` available:
+
+```bash
+tests/container-packaging/run.sh
+```
+
+Set `DECLARATIVE_CONFIG_DIR` when that checkout is elsewhere. The check builds
+the Deployment's semver-pinned image tag locally, starts it with non-secret
+loopback test values, and removes its temporary container and image afterward.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
