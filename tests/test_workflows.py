@@ -357,11 +357,23 @@ def test_explicitly_empty_phase_values_are_normalized_to_pending(status):
 @pytest.mark.parametrize(
     ("fixture_name", "expected_template", "expected_scope"),
     [
-        ("namespaced_template", "example-build", "namespaced"),
-        ("cluster_template", "shared", "cluster"),
-        ("label_only_template", "label-only-build", "namespaced"),
-        ("ref_and_label_template", "preferred-build", "namespaced"),
-        ("no_template", None, None),
+        pytest.param(
+            "namespaced_template", "example-build", "namespaced", id="namespaced-ref"
+        ),
+        pytest.param("cluster_template", "shared", "cluster", id="cluster-ref"),
+        pytest.param(
+            "inline_workflow", None, None, id="inline-workflow"
+        ),
+        pytest.param(
+            "absent_template_ref", None, None, id="absent-ref"
+        ),
+        pytest.param("null_template_ref", None, None, id="null-ref"),
+        pytest.param(
+            "label_only_template", "label-only-build", "namespaced", id="label-fallback"
+        ),
+        pytest.param(
+            "ref_and_label_template", "preferred-build", "namespaced", id="ref-wins-label"
+        ),
     ],
 )
 def test_template_fixtures_populate_shared_columns(
@@ -386,12 +398,6 @@ def test_cluster_template_label_wins_over_namespaced_label():
         "spec": {},
     }
     assert template_of(wf) == ("shared", "cluster")
-
-
-def test_inline_workflow_fixture_has_no_template_or_scope():
-    row = to_row(_fixture("inline_workflow"), "ci", "2026-09-23T13:00:00Z")
-    assert row["template"] is None
-    assert row["template_scope"] is None
 
 
 @pytest.mark.parametrize(
