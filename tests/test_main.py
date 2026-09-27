@@ -3,6 +3,7 @@ import io
 import json
 import logging
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1163,6 +1164,21 @@ def test_one_generation_id_across_all_three_objects(monkeypatch):
         s3.objects["argo/data/workflows.parquet"], parquet_io.WORKFLOWS_SCHEMA
     )
     assert {row["observed_at"] for row in snapshot.to_pylist()} == {_NEW_GENERATED_AT}
+
+
+def test_now_formats_utc_at_second_precision(monkeypatch):
+    requested_timezones = []
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            requested_timezones.append(tz)
+            return cls(2026, 9, 27, 12, 34, 56, 789123, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(main, "datetime", FrozenDateTime)
+
+    assert main._now() == "2026-09-27T12:34:56Z"
+    assert requested_timezones == [timezone.utc]
 
 
 def test_generated_at_is_captured_at_cycle_start_for_a_slow_cycle(monkeypatch):
