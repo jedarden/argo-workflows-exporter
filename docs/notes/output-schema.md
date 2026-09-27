@@ -13,8 +13,8 @@ of columns and differ only in their timestamp columns.
 | `name` | string | never | the generated object name |
 | `template` | string | inline workflows | the `WorkflowTemplate` a run came from |
 | `template_scope` | string | inline workflows | `namespaced` or `cluster` |
-| `trigger_kind` | string | nothing recorded | `cron`, `event`, or `user` |
-| `trigger_name` | string | nothing recorded | cron workflow name, Argo Events trigger name, or creator |
+| `trigger_kind` | string | nothing recorded | `cron`, `event`, or `user`; see [Trigger provenance and precedence](#trigger-provenance-and-precedence) |
+| `trigger_name` | string | nothing recorded | the name selected by the trigger precedence rule; see [Trigger provenance and precedence](#trigger-provenance-and-precedence) |
 | `phase` | string | never | `Pending`, `Running`, `Succeeded`, `Failed`, `Error`; an empty or absent source phase is normalized to `Pending` |
 | `message` | string | usually, on success | Argo's own summary of why a run ended as it did |
 | `progress` | string | not yet admitted | Argo's `N/M` completed-node counter, verbatim |
@@ -71,6 +71,30 @@ valid zero-row current snapshot, whose footer still carries its generation id.
 fallback: `generateName` is free text, and a wrong grouping is worse than an
 absent one. Group by `COALESCE(template, name)` if a bucket for inline runs
 is wanted.
+
+### Trigger provenance and precedence
+
+`trigger_kind` and `trigger_name` are derived from Workflow labels in this
+fixed order, highest precedence first:
+
+1. A non-empty `workflows.argoproj.io/cron-workflow` label produces
+   `trigger_kind = "cron"` and `trigger_name` equal to that label's cron
+   workflow name.
+2. Otherwise, a non-empty `events.argoproj.io/sensor` label produces
+   `trigger_kind = "event"`. If the Workflow also has a non-empty
+   `events.argoproj.io/trigger` label, `trigger_name` is that specific Argo
+   Events trigger name. Otherwise, `trigger_name` falls back to the sensor
+   name.
+3. Otherwise, a non-empty `workflows.argoproj.io/creator` label produces
+   `trigger_kind = "user"` and `trigger_name` equal to the creator value.
+4. If none of those labels is present, both columns are null.
+
+This means cron wins over event and user labels, and event wins over a creator
+label. The event trigger name is preferred because a sensor can contain
+multiple triggers. The sensor name is not stored in another output column and
+is discarded when a trigger label is available. A trigger label without its
+sensor label does not establish event provenance; the extractor continues to
+the creator fallback.
 
 **`duration_seconds` is null while running**, deliberately — not "elapsed so
 far". Age of a live run is `observed_at - started_at`, computed by the

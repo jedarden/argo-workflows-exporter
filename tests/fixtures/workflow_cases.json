@@ -154,6 +154,134 @@
       "progress": "0/1"
     }
   },
+  "cron_only": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-cron-only",
+      "name": "nightly-only-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {
+        "workflows.argoproj.io/cron-workflow": "nightly-only"
+      }
+    },
+    "spec": {},
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
+  "event_only": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-event-only",
+      "name": "repository-only-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {
+        "events.argoproj.io/sensor": "repository-sensor",
+        "events.argoproj.io/trigger": "push-trigger"
+      }
+    },
+    "spec": {},
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
+  "user_only": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-user-only",
+      "name": "manual-only-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {
+        "workflows.argoproj.io/creator": "alice"
+      }
+    },
+    "spec": {},
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
+  "event_sensor_only": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-event-sensor-only",
+      "name": "repository-sensor-only-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {
+        "events.argoproj.io/sensor": "repository-sensor"
+      }
+    },
+    "spec": {},
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
+  "event_and_user": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-event-and-user",
+      "name": "repository-and-user-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {
+        "events.argoproj.io/sensor": "repository-sensor",
+        "events.argoproj.io/trigger": "push-trigger",
+        "workflows.argoproj.io/creator": "argo-events-controller"
+      }
+    },
+    "spec": {},
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
+  "cron_and_user": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-cron-and-user",
+      "name": "nightly-and-user-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {
+        "workflows.argoproj.io/cron-workflow": "nightly",
+        "workflows.argoproj.io/creator": "argo-controller"
+      }
+    },
+    "spec": {},
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
+  "no_trigger": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-no-trigger",
+      "name": "unattributed-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
   "cron_precedence": {
     "apiVersion": "argoproj.io/v1alpha1",
     "kind": "Workflow",

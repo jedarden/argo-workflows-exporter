@@ -352,6 +352,28 @@ def test_inline_workflow_fixture_has_no_template_or_scope():
     assert row["template_scope"] is None
 
 
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_kind", "expected_name"),
+    [
+        pytest.param("cron_only", "cron", "nightly-only", id="cron-only"),
+        pytest.param("event_only", "event", "push-trigger", id="event-only"),
+        pytest.param("user_only", "user", "alice", id="user-only"),
+        pytest.param(
+            "event_sensor_only", "event", "repository-sensor", id="sensor-without-trigger"
+        ),
+        pytest.param("event_and_user", "event", "push-trigger", id="event-wins-user"),
+        pytest.param("cron_and_user", "cron", "nightly", id="cron-wins-user"),
+        pytest.param("no_trigger", None, None, id="no-trigger"),
+    ],
+)
+def test_trigger_extraction_fixtures_follow_precedence(
+    fixture_name, expected_kind, expected_name
+):
+    row = to_row(_fixture(fixture_name), "ci", "2026-09-23T13:00:00Z")
+    assert row["trigger_kind"] == expected_kind
+    assert row["trigger_name"] == expected_name
+
+
 def test_cron_trigger_fixture_wins_over_event_and_user_labels():
     row = to_row(_fixture("cron_precedence"), "ci", "2026-09-23T13:00:00Z")
     assert row["trigger_kind"] == "cron"
