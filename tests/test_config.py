@@ -319,3 +319,13 @@ def test_missing_version_file_falls_back_to_unknown(monkeypatch, tmp_path):
     version_file = tmp_path / "missing-version"
     _env(monkeypatch, '[{"name": "ci", "base_url": "http://p:8001"}]', VERSION_FILE=str(version_file))
     assert load().version == "unknown"
+
+
+@pytest.mark.parametrize("contents", [b"", b"\xff\xfe\x00"])
+def test_unreadable_or_empty_version_file_falls_back_to_unknown(
+    monkeypatch, tmp_path, contents
+):
+    version_file = tmp_path / "invalid-version"
+    version_file.write_bytes(contents)
+    _env(monkeypatch, '[{"name": "ci", "base_url": "http://p:8001"}]', VERSION_FILE=str(version_file))
+    assert load().version == "unknown"

@@ -68,7 +68,7 @@ ServiceAccount, and there is only one of those.
 | `LIST_PAGE_SIZE` | `500` | Kubernetes list page size; the exporter follows `continue` tokens to the end |
 | `HEALTH_PORT` | `8080` | `GET /health`; see the [health endpoint contract](../../README.md#health-endpoint) for response fields and status codes |
 | `LOG_LEVEL` | `INFO` | Python logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (case-insensitive; `WARN` and `FATAL` are accepted aliases) |
-| `VERSION_FILE` | `VERSION` | read once at startup, reported in `meta.json` |
+| `VERSION_FILE` | `VERSION` | read once at startup, reported in `meta.json`; missing, unreadable, or empty files publish version `"unknown"` |
 
 All numeric variables must parse as integers greater than zero.
 

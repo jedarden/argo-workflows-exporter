@@ -229,7 +229,7 @@ apply the same schema to downloaded sidecars.
 
 | Field | Type | Constraint | Meaning |
 |---|---|---|---|
-| `version` | string | non-empty | the exporter release that wrote this generation; `"unknown"` if built without a VERSION file |
+| `version` | string | non-empty | the exporter release that wrote this generation; `"unknown"` if the VERSION file is missing, unreadable, or empty |
 | `generated_at` | string | RFC 3339 UTC, second resolution, literal `Z` (`%Y-%m-%dT%H:%M:%SZ`) | when this cycle ran — see the heartbeat note below |
 | `generation_id` | string | `<generated_at>` + `-` + 12 lowercase hex | this publication's identity — see below |
 | `poll_interval_seconds` | integer | ≥ 1 | the exporter's post-cycle delay; combine it with the consumer's `C_max` to judge `generated_at` freshness |
