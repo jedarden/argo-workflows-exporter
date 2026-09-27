@@ -1079,6 +1079,99 @@ def test_malformed_cluster_does_not_block_publication_of_healthy_cluster(monkeyp
     ]
 
 
+@pytest.mark.parametrize(
+    "malformation",
+    [
+        pytest.param("missing-uid", id="missing-uid"),
+        pytest.param("missing-name", id="missing-name"),
+        pytest.param("missing-namespace", id="missing-namespace"),
+        pytest.param("invalid-status", id="invalid-status"),
+        pytest.param("invalid-node", id="invalid-node"),
+    ],
+)
+def test_malformed_cluster_has_no_partial_rows_or_ledger_updates(
+    monkeypatch, malformation
+):
+    """A bad item invalidates only its cluster's snapshot for the cycle.
+
+    The healthy cluster still commits, while the malformed cluster's valid
+    item is not allowed into either Parquet output and its prior ledger row is
+    not refreshed as though the cluster had been observed successfully.
+    """
+    generated_at = "2026-09-27T12:00:00Z"
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-20T00:00:00Z")
+
+    malformed = _workflow("wf-broken-new", "broken-new")
+    if malformation.startswith("missing-"):
+        del malformed["metadata"][malformation.removeprefix("missing-")]
+    elif malformation == "invalid-status":
+        malformed["status"] = []
+    else:
+        malformed["status"] = {"phase": "Failed", "nodes": {"node": None}}
+
+    _list(
+        monkeypatch,
+        {
+            "broken": (
+                [_workflow("wf-broken-partial", "broken-partial"), malformed],
+                True,
+            ),
+            "healthy": ([_workflow("wf-healthy-new", "healthy-new")], True),
+        },
+    )
+    prior_runs = [
+        {
+            "uid": "wf-broken-old",
+            "cluster": "broken",
+            "phase": "Succeeded",
+            "first_seen_at": "2026-09-25T10:00:00Z",
+            "last_seen_at": "2026-09-26T10:00:00Z",
+        },
+        {
+            "uid": "wf-healthy-old",
+            "cluster": "healthy",
+            "phase": "Succeeded",
+            "first_seen_at": "2026-09-25T11:00:00Z",
+            "last_seen_at": "2026-09-26T11:00:00Z",
+        },
+    ]
+    s3 = _MemoryS3(
+        {
+            "argo/data/runs.parquet": parquet_io.table_to_parquet_bytes(
+                prior_runs, parquet_io.RUNS_SCHEMA
+            )
+        }
+    )
+
+    assert main._run_cycle(
+        _config([Cluster(name="broken"), Cluster(name="healthy")]), s3
+    ) is True
+
+    snapshot = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/workflows.parquet"], parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    assert {(row["cluster"], row["uid"]) for row in snapshot} == {
+        ("healthy", "wf-healthy-new")
+    }
+
+    runs = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
+    ).to_pylist()
+    runs_by_key = {(row["cluster"], row["uid"]): row for row in runs}
+    assert ("broken", "wf-broken-partial") not in runs_by_key
+    assert ("broken", "wf-broken-new") not in runs_by_key
+    assert runs_by_key["broken", "wf-broken-old"]["last_seen_at"] == "2026-09-26T10:00:00Z"
+    assert runs_by_key["healthy", "wf-healthy-new"]["last_seen_at"] == generated_at
+
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    assert {
+        stat["name"]: (stat["ok"], stat["workflows"])
+        for stat in meta["clusters"]
+    } == {"broken": (False, 0), "healthy": (True, 1)}
+    assert meta["workflows"] == 1
+
+
 def test_all_malformed_clusters_preserve_the_previous_publication(monkeypatch):
     cfg = _config([Cluster(name="broken-a"), Cluster(name="broken-b")])
     _list(

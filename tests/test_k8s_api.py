@@ -91,10 +91,12 @@ def test_successful_json_null_is_not_treated_as_a_transport_failure(monkeypatch)
 @pytest.mark.parametrize(
     "page",
     [
+        pytest.param([], id="array-response"),
         pytest.param({}, id="missing-items"),
         pytest.param({"items": {}}, id="items-object"),
         pytest.param({"items": None}, id="items-null"),
         pytest.param({"items": [], "metadata": []}, id="metadata-array"),
+        pytest.param({"items": [], "metadata": "not-an-object"}, id="metadata-string"),
     ],
 )
 def test_malformed_list_shapes_are_surfaced(page):

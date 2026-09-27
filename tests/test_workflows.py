@@ -172,6 +172,50 @@ def test_to_row_surfaces_malformed_workflow_objects(workflow):
         to_row(workflow, "ci", "2026-09-23T20:00:00Z")
 
 
+@pytest.mark.parametrize("field", ["uid", "name", "namespace"])
+def test_missing_workflow_identity_field_is_rejected(field):
+    workflow = _wf()
+    del workflow["metadata"][field]
+
+    with pytest.raises(MalformedWorkflowError, match=f"metadata\\.{field}"):
+        to_row(workflow, "ci", "2026-09-23T20:00:00Z")
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        pytest.param([], id="status-array"),
+        pytest.param({"phase": []}, id="phase-array"),
+        pytest.param({"message": 3}, id="message-number"),
+        pytest.param({"resourcesDuration": []}, id="resources-array"),
+        pytest.param(
+            {"resourcesDuration": {"cpu": "31"}}, id="cpu-duration-string"
+        ),
+    ],
+)
+def test_invalid_status_shapes_are_rejected(status):
+    with pytest.raises(MalformedWorkflowError, match="status"):
+        to_row(_wf(status=status), "ci", "2026-09-23T20:00:00Z")
+
+
+@pytest.mark.parametrize(
+    "nodes",
+    [
+        pytest.param([], id="nodes-array"),
+        pytest.param({"node": None}, id="node-null"),
+        pytest.param({"node": {"phase": []}}, id="node-phase-array"),
+        pytest.param({"node": {"type": 7}}, id="node-type-number"),
+    ],
+)
+def test_invalid_node_data_is_rejected(nodes):
+    with pytest.raises(MalformedWorkflowError, match="status\\.nodes"):
+        to_row(
+            _wf(status={"phase": "Failed", "nodes": nodes}),
+            "ci",
+            "2026-09-23T20:00:00Z",
+        )
+
+
 def test_template_prefers_the_spec_reference():
     wf = _wf(spec={"workflowTemplateRef": {"name": "example-build"}})
     wf["metadata"]["labels"] = {"workflows.argoproj.io/workflow-template": "stale-label"}
