@@ -65,6 +65,14 @@ carried into the new `workflows.parquet`; `meta.json` marks that cluster
 Column definitions and the full consumer contract are in
 [`docs/notes/output-schema.md`](docs/notes/output-schema.md).
 
+The failure taxonomy is shipped, not a planned schema addition:
+`failure_fingerprint` and `failure_class` first became available in exporter
+`0.2.0` (`264dae7be0e59176f106d87c7a42ea588c4fcf51`). The shared derivation
+used by both Parquet outputs was then consolidated in `0.2.44`
+(`163283f3cf35a1a6699fbe8f7b08f43fa9ce484c`). Consumers must still accept null
+values for rows written before `0.2.0`; schema conformance does not invent a
+taxonomy for a run that has not been observed again.
+
 A cycle in which **no cluster completes its listing** writes nothing at all,
 rather than replacing good data with an empty snapshot. `meta.json`'s
 `generated_at` going stale is the signal that collection has stopped. A

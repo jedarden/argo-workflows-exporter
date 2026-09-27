@@ -3,6 +3,20 @@
 Three objects under `DEST_S3_PREFIX`. Both Parquet files share a common set
 of columns and differ only in their timestamp columns.
 
+## Failure taxonomy availability
+
+`failure_fingerprint` and `failure_class` are shipped columns. They were first
+added in exporter release `0.2.0` by commit
+`264dae7be0e59176f106d87c7a42ea588c4fcf51` on 2026-09-06. Their derivation was
+consolidated at the ledger boundary so `workflows.parquet` and `runs.parquet`
+cannot disagree in release `0.2.44`, commit
+`163283f3cf35a1a6699fbe8f7b08f43fa9ce484c`, on 2026-09-27. They are therefore
+part of the current producer contract, not an upcoming column.
+
+Objects written before `0.2.0` do not contain these fields. Reading them
+through schema conformance supplies typed nulls; a re-observation can populate
+the fields, but an already-reaped run is not retroactively classified.
+
 ## Shared columns
 
 | Column | Type | Null when | Notes |

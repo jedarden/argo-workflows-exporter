@@ -72,20 +72,26 @@ Two tables and a sidecar, defined in
   with the S3 credential supplied by reference, and a first consumer reading
   the output. Shipped 2026-08-11 (`ronaldraygun/argo-workflows-exporter:0.1.0`
   on ardenone-cluster, consumed by `dashboard.ardenone.com/argo/`).
-- [x] **Phase 3a: Failure taxonomy (committed 2026-09-01).** Both
+- [x] **Phase 3a: Failure taxonomy (shipped in 0.2.0).** Both
   `workflows.parquet` and `runs.parquet` carry `failed_step_message` as a raw
-  string, so failures cannot be aggregated. Add `failure_fingerprint`: the
-  message normalized by stripping hashes, UUIDs, timestamps, durations, pod
-  names and absolute paths, then hashed to a short stable id, plus
+  string, so failures cannot be aggregated. They now carry
+  `failure_fingerprint`: the message normalized by stripping hashes, UUIDs,
+  timestamps, durations, pod names and absolute paths, then hashed to a short
+  stable id, plus
   `failure_class` from a small reviewed rule table (timeout, OOM, clone/auth,
   image pull, test failure, lint, build, infrastructure, unknown). Both
   columns are additive; the raw message stays. This is one of the three join
   sources for the factory attempt ledger (NEEDLE plan section 4.4): a bead's
   CI run is joined on the workflow name/commit recorded in `attempt.resolved`,
-  and its fingerprint becomes the CI half of a failure signature. Shipped
-  2026-09-06 in 0.2.0 (`src/failure_taxonomy.py` `normalize_failure` /
-  `failure_class`, rules in `src/failure_classes.yaml`, rationale in
-  [`../notes/output-schema.md`](../notes/output-schema.md)).
+  and its fingerprint becomes the CI half of a failure signature. First
+  shipped on 2026-09-06 by commit
+  `264dae7be0e59176f106d87c7a42ea588c4fcf51` in release `0.2.0`
+  (`src/workflows.py` `normalize_failure` / `failure_class`, rules in
+  `src/failure_classes.yaml`). The shared derivation for both output paths
+  was consolidated on 2026-09-27 by commit
+  `163283f3cf35a1a6699fbe8f7b08f43fa9ce484c` in release `0.2.44`; the
+  rationale and legacy-null behavior are in
+  [`../notes/output-schema.md`](../notes/output-schema.md).
 - [ ] **Phase 3b: Depth, if wanted.** Candidates, none committed:
   `workflowtemplates` / `cronworkflows` inventory so templates that have
   never run are visible; per-step rows rather than just the first failure;
