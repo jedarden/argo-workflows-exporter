@@ -131,6 +131,23 @@ def test_repeated_continuation_token_is_surfaced_instead_of_looping():
     assert calls == [{"limit": 500}, {"limit": 500, "continue": "same"}]
 
 
+def test_cyclic_continuation_tokens_terminate_without_returning_partial_items():
+    fetch, calls = _pages(
+        {"items": [{"a": 1}], "metadata": {"continue": "first"}},
+        {"items": [{"a": 2}], "metadata": {"continue": "second"}},
+        {"items": [{"a": 3}], "metadata": {"continue": "first"}},
+    )
+
+    with pytest.raises(KubernetesResponseError, match="repeated"):
+        list_items(_CLUSTER, "/p", 10, 500, fetch=fetch)
+
+    assert calls == [
+        {"limit": 500},
+        {"limit": 500, "continue": "first"},
+        {"limit": 500, "continue": "second"},
+    ]
+
+
 def test_malformed_later_page_cannot_return_the_first_page_as_a_partial_result():
     fetch, _ = _pages(
         {"items": [{"a": 1}], "metadata": {"continue": "next"}},

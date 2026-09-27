@@ -787,7 +787,9 @@ def test_paginated_request_timeout_isolated_from_successful_cluster(monkeypatch)
     _assert_published_counts_and_generation(meta, workflows_bytes, runs_bytes)
 
 
-@pytest.mark.parametrize("failure_mode", ["unreachable", "pagination"])
+@pytest.mark.parametrize(
+    "failure_mode", ["unreachable", "pagination", "pagination-cycle"]
+)
 def test_mixed_success_replaces_snapshot_but_retains_failed_cluster_ledger(
     monkeypatch, failure_mode
 ):
@@ -867,20 +869,37 @@ def test_mixed_success_replaces_snapshot_but_retains_failed_cluster_ledger(
         page_size=1,
     )
 
+    failed_first_page = (
+        {
+            "items": [_workflow("failed-partial", "failed-partial")],
+            "metadata": {"continue": "failed-next"},
+        }
+        if failure_mode in {"pagination", "pagination-cycle"}
+        else k8s_api.requests.Timeout("failed cluster is unreachable")
+    )
+    failed_next_page = (
+        {
+            "items": (
+                [_workflow("failed-second-partial", "failed-second-partial")]
+                if failure_mode == "pagination-cycle"
+                else []
+            ),
+            "metadata": (
+                {"continue": "failed-next"}
+                if failure_mode == "pagination-cycle"
+                else {}
+            ),
+        }
+        if failure_mode == "pagination-cycle"
+        else k8s_api.requests.Timeout("failed pagination request timed out")
+    )
     pages = {
         "http://healthy.example": {
             None: {"items": [_workflow("healthy-now", "healthy-now")]}
         },
         "http://failed.example": {
-            None: (
-                {
-                    "items": [_workflow("failed-partial", "failed-partial")],
-                    "metadata": {"continue": "failed-next"},
-                }
-                if failure_mode == "pagination"
-                else k8s_api.requests.Timeout("failed cluster is unreachable")
-            ),
-            "failed-next": k8s_api.requests.Timeout("failed pagination request timed out"),
+            None: failed_first_page,
+            "failed-next": failed_next_page,
         },
     }
     calls = []
@@ -910,7 +929,7 @@ def test_mixed_success_replaces_snapshot_but_retains_failed_cluster_ledger(
             {"timeout": 10},
         ),
     ]
-    if failure_mode == "pagination":
+    if failure_mode in {"pagination", "pagination-cycle"}:
         expected_calls.append(
             (
                 "http://failed.example/apis/argoproj.io/v1alpha1/workflows",
