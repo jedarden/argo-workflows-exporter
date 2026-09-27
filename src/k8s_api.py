@@ -19,6 +19,17 @@ _SA_CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 _LOCAL_API_SERVER = "https://kubernetes.default.svc"
 
 
+class KubernetesResponseError(ValueError):
+    """A successful Kubernetes request returned an unusable JSON body.
+
+    Request failures are represented by ``list_items`` returning
+    ``([], False)`` because they are expected to be transient. A response
+    that parses as JSON but violates the list contract is different: treating
+    it as an empty list would make every object on that cluster look deleted.
+    Callers can catch this error per cluster and keep it out of the snapshot.
+    """
+
+
 def _local_request(path: str, params: dict, timeout: int) -> requests.Response:
     with open(_SA_TOKEN_PATH) as f:
         token = f.read().strip()
@@ -32,9 +43,13 @@ def _local_request(path: str, params: dict, timeout: int) -> requests.Response:
 
 
 def fetch_json(cluster: Cluster, path: str, timeout: int, params: dict | None = None):
-    """GET `path` from `cluster`. Returns the parsed JSON body, or None if the
-    request failed or returned a non-200 status (logged rather than raised —
-    one unreachable cluster must not stop the others being collected)."""
+    """GET `path` from `cluster` and return its parsed JSON body.
+
+    Request failures and non-200 responses return ``None`` so one unreachable
+    cluster does not stop the others being collected. Invalid JSON is raised
+    as ``KubernetesResponseError``: it is a malformed answer, not an empty
+    answer, and must not silently erase a cluster's snapshot.
+    """
     try:
         if cluster.base_url is None:
             resp = _local_request(path, params or {}, timeout)
@@ -47,7 +62,20 @@ def fetch_json(cluster: Cluster, path: str, timeout: int, params: dict | None = 
     if resp.status_code != 200:
         log.warning("%s: %s -> HTTP %d", cluster.name, path, resp.status_code)
         return None
-    return resp.json()
+    try:
+        body = resp.json()
+    except ValueError as e:
+        raise KubernetesResponseError(
+            f"{cluster.name}: invalid JSON response from {path}: {e}"
+        ) from e
+    if body is None:
+        # ``None`` is the transport-failure sentinel used by list_items, so a
+        # successful JSON null must not be allowed to masquerade as a failed
+        # request and quietly become an empty result.
+        raise KubernetesResponseError(
+            f"{cluster.name}: malformed JSON response from {path}: expected an object"
+        )
+    return body
 
 
 def list_path(namespace: str, plural: str) -> str:
@@ -61,21 +89,70 @@ def list_items(cluster: Cluster, path: str, timeout: int, page_size: int, fetch=
     """Pages through a Kubernetes list endpoint and returns
     `(items, complete)`.
 
-    `complete` is False when any page failed. That distinction matters more
-    here than it looks: this exporter's consumer treats "this workflow was
-    not in the response" as "it no longer exists", so silently returning the
-    first page of a two-page list would read as a fleet that just lost half
-    its runs. Callers skip the cluster for the cycle instead.
+    `complete` is False when any page failed. In that case the returned items
+    are always discarded. That distinction matters more here than it looks:
+    this exporter's consumer treats "this workflow was not in the response"
+    as "it no longer exists", so returning the first page of a failed
+    two-page list would read as a fleet that just lost half its runs. Callers
+    skip the cluster for the cycle instead.
+
+    A successful response whose JSON shape violates the Kubernetes list
+    contract raises ``KubernetesResponseError``. It is never converted into
+    an empty or partial result.
     """
     items = []
     params = {"limit": page_size}
+    seen_tokens = set()
     while True:
         page = fetch(cluster, path, timeout, params)
         if page is None:
-            return items, False
-        items.extend(page.get("items", []))
+            return [], False
+        if not isinstance(page, dict):
+            raise KubernetesResponseError(
+                f"{cluster.name}: malformed list response from {path}: "
+                f"expected a JSON object, got {type(page).__name__}"
+            )
+        if "items" not in page:
+            raise KubernetesResponseError(
+                f"{cluster.name}: malformed list response from {path}: "
+                "missing 'items'"
+            )
+        page_items = page["items"]
+        if not isinstance(page_items, list):
+            raise KubernetesResponseError(
+                f"{cluster.name}: malformed list response from {path}: "
+                f"'items' must be a JSON array, got {type(page_items).__name__}"
+            )
+        items.extend(page_items)
 
-        token = (page.get("metadata") or {}).get("continue")
+        metadata = page.get("metadata")
+        if metadata is None:
+            token = None
+        elif not isinstance(metadata, dict):
+            raise KubernetesResponseError(
+                f"{cluster.name}: malformed list response from {path}: "
+                f"'metadata' must be a JSON object, got {type(metadata).__name__}"
+            )
+        elif "continue" not in metadata:
+            token = None
+        else:
+            token = metadata["continue"]
+            if token is None or not isinstance(token, str):
+                raise KubernetesResponseError(
+                    f"{cluster.name}: malformed list response from {path}: "
+                    "'metadata.continue' must be a string"
+                )
+            if token and not token.strip():
+                raise KubernetesResponseError(
+                    f"{cluster.name}: malformed list response from {path}: "
+                    "'metadata.continue' must not be whitespace"
+                )
         if not token:
             return items, True
+        if token in seen_tokens:
+            raise KubernetesResponseError(
+                f"{cluster.name}: malformed list response from {path}: "
+                f"continuation token repeated: {token!r}"
+            )
+        seen_tokens.add(token)
         params = {"limit": page_size, "continue": token}

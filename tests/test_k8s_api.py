@@ -4,7 +4,7 @@ import pytest
 
 from src.config import Cluster
 from src import k8s_api
-from src.k8s_api import fetch_json, list_items, list_path
+from src.k8s_api import KubernetesResponseError, fetch_json, list_items, list_path
 
 _CLUSTER = Cluster(name="ci", base_url="http://proxy.example:8001")
 
@@ -60,12 +60,82 @@ def test_a_failed_page_marks_the_listing_incomplete():
     fetch, _ = _pages({"items": [{"a": 1}], "metadata": {"continue": "tok"}}, None)
     items, complete = list_items(_CLUSTER, "/p", 10, 500, fetch=fetch)
     assert complete is False
-    assert items == [{"a": 1}]
+    assert items == []
 
 
 def test_first_page_failure_is_incomplete_and_empty():
     fetch, _ = _pages(None)
     assert list_items(_CLUSTER, "/p", 10, 500, fetch=fetch) == ([], False)
+
+
+def test_invalid_json_is_surfaced_as_a_malformed_response(monkeypatch):
+    def fake_get(*args, **kwargs):
+        response = SimpleNamespace(status_code=200)
+        response.json = lambda: (_ for _ in ()).throw(ValueError("bad JSON"))
+        return response
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+    with pytest.raises(KubernetesResponseError, match="invalid JSON"):
+        fetch_json(_CLUSTER, "/p", 17)
+
+
+def test_successful_json_null_is_not_treated_as_a_transport_failure(monkeypatch):
+    def fake_get(*args, **kwargs):
+        return SimpleNamespace(status_code=200, json=lambda: None)
+
+    monkeypatch.setattr(k8s_api.requests, "get", fake_get)
+    with pytest.raises(KubernetesResponseError, match="malformed JSON"):
+        fetch_json(_CLUSTER, "/p", 17)
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        pytest.param({}, id="missing-items"),
+        pytest.param({"items": {}}, id="items-object"),
+        pytest.param({"items": None}, id="items-null"),
+        pytest.param({"items": [], "metadata": []}, id="metadata-array"),
+    ],
+)
+def test_malformed_list_shapes_are_surfaced(page):
+    fetch, _ = _pages(page)
+    with pytest.raises(KubernetesResponseError, match="malformed list response"):
+        list_items(_CLUSTER, "/p", 10, 500, fetch=fetch)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        pytest.param(None, id="null"),
+        pytest.param(123, id="number"),
+        pytest.param([], id="array"),
+        pytest.param({}, id="object"),
+        pytest.param("   ", id="whitespace"),
+    ],
+)
+def test_malformed_continuation_tokens_are_surfaced(token):
+    fetch, _ = _pages({"items": [], "metadata": {"continue": token}})
+    with pytest.raises(KubernetesResponseError, match="metadata.continue"):
+        list_items(_CLUSTER, "/p", 10, 500, fetch=fetch)
+
+
+def test_repeated_continuation_token_is_surfaced_instead_of_looping():
+    fetch, calls = _pages(
+        {"items": [{"a": 1}], "metadata": {"continue": "same"}},
+        {"items": [{"a": 2}], "metadata": {"continue": "same"}},
+    )
+    with pytest.raises(KubernetesResponseError, match="repeated"):
+        list_items(_CLUSTER, "/p", 10, 500, fetch=fetch)
+    assert calls == [{"limit": 500}, {"limit": 500, "continue": "same"}]
+
+
+def test_malformed_later_page_cannot_return_the_first_page_as_a_partial_result():
+    fetch, _ = _pages(
+        {"items": [{"a": 1}], "metadata": {"continue": "next"}},
+        {"items": {}, "metadata": {}},
+    )
+    with pytest.raises(KubernetesResponseError):
+        list_items(_CLUSTER, "/p", 10, 500, fetch=fetch)
 
 
 def test_fetch_json_issues_a_plain_get_with_no_watch_parameter(monkeypatch):

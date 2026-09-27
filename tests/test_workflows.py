@@ -7,7 +7,9 @@ import pytest
 
 from src import workflows
 from src.config import Cluster
+from src.k8s_api import KubernetesResponseError
 from src.workflows import (
+    MalformedWorkflowError,
     _load_failure_classes,
     duration_seconds,
     failed_step,
@@ -94,6 +96,78 @@ def test_fetch_workflows_uses_the_cluster_scoped_path_in_all_namespace_mode(monk
     )
 
     assert calls == ["/apis/argoproj.io/v1alpha1/workflows"]
+
+
+def test_malformed_kubernetes_response_isolated_to_its_cluster(monkeypatch, caplog):
+    valid = _wf()
+    valid["metadata"]["uid"] = "uid-good"
+
+    def fake_list_items(cluster, path, timeout, page_size):
+        if cluster.name == "broken":
+            raise KubernetesResponseError("broken: invalid JSON response")
+        return [valid], True
+
+    monkeypatch.setattr(workflows, "list_items", fake_list_items)
+    with caplog.at_level("ERROR", logger="src.workflows"):
+        rows, stats = workflows.fetch_workflows(
+            [Cluster(name="broken"), Cluster(name="healthy")],
+            "argo",
+            10,
+            500,
+            "2026-09-23T20:00:00Z",
+        )
+
+    assert [row["uid"] for row in rows] == ["uid-good"]
+    assert stats == [
+        {"name": "broken", "ok": False, "workflows": 0},
+        {"name": "healthy", "ok": True, "workflows": 1},
+    ]
+    assert "broken: malformed Kubernetes response" in caplog.text
+    assert "invalid JSON response" in caplog.text
+
+
+def test_malformed_workflow_discards_all_rows_from_its_cluster(monkeypatch, caplog):
+    good = _wf()
+    good["metadata"]["uid"] = "uid-that-must-be-discarded"
+
+    def fake_list_items(cluster, path, timeout, page_size):
+        if cluster.name == "broken":
+            return [good, None], True
+        return [_wf()], True
+
+    monkeypatch.setattr(workflows, "list_items", fake_list_items)
+    with caplog.at_level("ERROR", logger="src.workflows"):
+        rows, stats = workflows.fetch_workflows(
+            [Cluster(name="broken"), Cluster(name="healthy")],
+            "argo",
+            10,
+            500,
+            "2026-09-23T20:00:00Z",
+        )
+
+    assert [row["uid"] for row in rows] == ["uid-1"]
+    assert stats == [
+        {"name": "broken", "ok": False, "workflows": 0},
+        {"name": "healthy", "ok": True, "workflows": 1},
+    ]
+    assert "discarding all 2 item(s)" in caplog.text
+    assert "items[1]" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "workflow",
+    [
+        pytest.param(None, id="null-item"),
+        pytest.param({"metadata": {}, "spec": {}, "status": {}}, id="missing-identity"),
+        pytest.param(
+            {"metadata": {"uid": "u", "name": "n", "namespace": "argo"}, "spec": []},
+            id="non-object-spec",
+        ),
+    ],
+)
+def test_to_row_surfaces_malformed_workflow_objects(workflow):
+    with pytest.raises(MalformedWorkflowError):
+        to_row(workflow, "ci", "2026-09-23T20:00:00Z")
 
 
 def test_template_prefers_the_spec_reference():

@@ -916,6 +916,53 @@ def test_failed_collection_on_first_run_writes_nothing(monkeypatch):
     assert s3.uploaded_keys == []
 
 
+def test_malformed_cluster_does_not_block_publication_of_healthy_cluster(monkeypatch):
+    cfg = _config([Cluster(name="broken"), Cluster(name="healthy")])
+    _list(
+        monkeypatch,
+        {
+            "broken": ([_workflow("wf-broken", "broken"), None], True),
+            "healthy": ([_workflow("wf-healthy", "healthy")], True),
+        },
+    )
+    s3 = _RecordingS3()
+
+    assert main._run_cycle(cfg, s3) is True
+
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    assert meta["clusters"] == [
+        {"name": "broken", "ok": False, "workflows": 0},
+        {"name": "healthy", "ok": True, "workflows": 1},
+    ]
+    snapshot = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/workflows.parquet"], parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    assert [row["uid"] for row in snapshot] == ["wf-healthy"]
+    assert s3.uploaded_keys == [
+        "argo/data/workflows.parquet",
+        "argo/data/runs.parquet",
+        "argo/data/meta.json",
+    ]
+
+
+def test_all_malformed_clusters_preserve_the_previous_publication(monkeypatch):
+    cfg = _config([Cluster(name="broken-a"), Cluster(name="broken-b")])
+    _list(
+        monkeypatch,
+        {
+            "broken-a": ([_workflow("wf-a", "a"), None], True),
+            "broken-b": ([{"metadata": {}, "spec": {}, "status": {}}], True),
+        },
+    )
+    s3 = _MemoryS3(_prior_generation())
+    before = dict(s3.objects)
+
+    assert main._run_cycle(cfg, s3) is False
+
+    assert s3.objects == before
+    assert s3.puts == 0
+
+
 def test_failed_listing_preserves_the_previous_committed_generation(monkeypatch):
     s3 = _MemoryS3(_prior_generation())
     before = dict(s3.objects)

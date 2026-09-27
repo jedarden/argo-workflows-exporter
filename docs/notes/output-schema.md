@@ -227,6 +227,15 @@ one other cluster succeeds, the new file is a union of the successfully listed
 clusters only, and `meta.json` is updated with the same per-cluster `ok` status.
 Top-level `workflows` counts only those included rows.
 
+Malformed answers are unavailable too. Invalid JSON, a list response with a
+missing or non-array `items` field, a non-string or repeated continuation
+token, and a malformed individual `Workflow` object are logged as errors and
+mark that cluster `ok: false`. Rows already received from that cluster are
+discarded; a malformed item never becomes a blank row and never leaves a
+partial cluster snapshot behind. The other clusters are still collected and
+may be published. If every cluster is unavailable, publication is skipped and
+the previous generation remains untouched.
+
 If every cluster is unavailable, none of the three objects is written. The
 previous objects remain as the last published generation and
 `meta.generated_at` stops advancing; if there was no previous generation,

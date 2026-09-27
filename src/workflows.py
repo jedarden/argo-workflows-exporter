@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from .k8s_api import list_items, list_path
+from .k8s_api import KubernetesResponseError, list_items, list_path
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +25,103 @@ LABEL_SENSOR = "events.argoproj.io/sensor"
 LABEL_TRIGGER = "events.argoproj.io/trigger"
 
 _TERMINAL_NODE_PHASES = ("Failed", "Error")
+
+
+class MalformedWorkflowError(ValueError):
+    """A list item cannot be represented as a Workflow snapshot row."""
+
+
+def _workflow_location(index):
+    return f"items[{index}]" if index is not None else "workflow"
+
+
+def _require_workflow_mapping(value, location, field):
+    if not isinstance(value, dict):
+        raise MalformedWorkflowError(
+            f"{location}: '{field}' must be a JSON object, got {type(value).__name__}"
+        )
+
+
+def _require_workflow_string(value, location, field, required=False):
+    if value is None and not required:
+        return
+    if not isinstance(value, str) or (required and not value.strip()):
+        requirement = "non-empty string" if required else "string or null"
+        raise MalformedWorkflowError(
+            f"{location}: '{field}' must be a {requirement}"
+        )
+
+
+def _validate_workflow(wf, index=None):
+    """Reject malformed list items before they can become blank or partial rows.
+
+    The Kubernetes API guarantees object-shaped Workflow resources, but the
+    exporter still validates the fields it reads. In particular, uid/name/
+    namespace are the snapshot identity, while the optional nested maps are
+    required to have the shape the extractors expect. A cluster with one bad
+    item is unavailable for this cycle; valid items from that same response
+    must not be published as a misleading partial snapshot.
+    """
+    location = _workflow_location(index)
+    if not isinstance(wf, dict):
+        raise MalformedWorkflowError(
+            f"{location}: expected a JSON object, got {type(wf).__name__}"
+        )
+
+    metadata = wf.get("metadata")
+    _require_workflow_mapping(metadata, location, "metadata")
+    for field in ("uid", "name", "namespace"):
+        _require_workflow_string(metadata.get(field), location, f"metadata.{field}", True)
+    labels = metadata.get("labels")
+    if labels is not None:
+        _require_workflow_mapping(labels, location, "metadata.labels")
+        for key, value in labels.items():
+            _require_workflow_string(value, location, f"metadata.labels[{key!r}]", True)
+
+    spec = wf.get("spec")
+    _require_workflow_mapping(spec, location, "spec")
+    template_ref = spec.get("workflowTemplateRef")
+    if template_ref is not None:
+        _require_workflow_mapping(template_ref, location, "spec.workflowTemplateRef")
+        _require_workflow_string(
+            template_ref.get("name"), location, "spec.workflowTemplateRef.name", True
+        )
+        if "clusterScope" in template_ref and not isinstance(
+            template_ref["clusterScope"], bool
+        ):
+            raise MalformedWorkflowError(
+                f"{location}: 'spec.workflowTemplateRef.clusterScope' must be a boolean"
+            )
+
+    status = wf.get("status")
+    if status is None:
+        return
+    _require_workflow_mapping(status, location, "status")
+    for field in ("phase", "message", "progress", "startedAt", "finishedAt"):
+        if field in status:
+            _require_workflow_string(status[field], location, f"status.{field}")
+
+    resources = status.get("resourcesDuration")
+    if resources is not None:
+        _require_workflow_mapping(resources, location, "status.resourcesDuration")
+        for field in ("cpu", "memory"):
+            if field in resources and (
+                not isinstance(resources[field], int) or isinstance(resources[field], bool)
+            ):
+                raise MalformedWorkflowError(
+                    f"{location}: 'status.resourcesDuration.{field}' must be an integer"
+                )
+
+    nodes = status.get("nodes")
+    if nodes is not None:
+        _require_workflow_mapping(nodes, location, "status.nodes")
+        for node_name, node in nodes.items():
+            _require_workflow_mapping(node, location, f"status.nodes[{node_name!r}]")
+            for field in ("phase", "type", "displayName", "name", "startedAt", "message"):
+                if field in node:
+                    _require_workflow_string(
+                        node[field], location, f"status.nodes[{node_name!r}].{field}"
+                    )
 
 
 def _parse_ts(value):
@@ -225,6 +322,7 @@ def failure_class(message):
 
 
 def to_row(wf, cluster_name: str, observed_at: str) -> dict:
+    _validate_workflow(wf)
     meta = wf.get("metadata") or {}
     status = wf.get("status") or {}
     template, template_scope = template_of(wf)
@@ -274,26 +372,65 @@ def fetch_workflows(clusters, default_namespace: str, timeout: int, page_size: i
     """Returns `(rows, cluster_stats)` — one row per Workflow object that
     currently exists, across every reachable cluster.
 
-    A cluster that fails or answers only partially contributes no rows and is
-    reported `ok: false`, rather than contributing what did arrive. Consumers
-    read a missing workflow as a deleted one, so a half-answer is worse than
-    no answer: it would show runs vanishing that are still there.
+    A cluster that fails, answers only partially, or returns malformed list or
+    Workflow data contributes no rows and is reported `ok: false`, rather
+    than contributing what did arrive. Consumers read a missing workflow as a
+    deleted one, so a half-answer is worse than no answer: it would show runs
+    vanishing that are still there. Malformed data is logged as an error and
+    isolated to that cluster; other clusters can still produce a snapshot.
     """
     rows, stats = [], []
     for cluster in clusters:
         namespace = cluster.namespace if cluster.namespace is not None else default_namespace
-        items, complete = list_items(
-            cluster, list_path(namespace, "workflows"), timeout, page_size
-        )
+        path = list_path(namespace, "workflows")
+        try:
+            items, complete = list_items(cluster, path, timeout, page_size)
+        except KubernetesResponseError as exc:
+            log.error(
+                "%s: malformed Kubernetes response: %s; "
+                "discarding this cluster for the cycle",
+                cluster.name,
+                exc,
+            )
+            stats.append({"name": cluster.name, "ok": False, "workflows": 0})
+            continue
         if not complete:
             log.warning(
-                "%s: incomplete workflow listing (%d item(s) before the failure), "
-                "skipping this cluster for this cycle", cluster.name, len(items)
+                "%s: incomplete workflow listing; discarding any partial items "
+                "and skipping this cluster for this cycle",
+                cluster.name,
             )
             stats.append({"name": cluster.name, "ok": False, "workflows": 0})
             continue
 
-        cluster_rows = [to_row(wf, cluster.name, observed_at) for wf in items]
+        cluster_rows = []
+        try:
+            for index, wf in enumerate(items):
+                _validate_workflow(wf, index)
+                cluster_rows.append(to_row(wf, cluster.name, observed_at))
+        except MalformedWorkflowError as exc:
+            log.error(
+                "%s: malformed Workflow response: %s; "
+                "discarding all %d item(s) for this cluster",
+                cluster.name,
+                exc,
+                len(items),
+            )
+            stats.append({"name": cluster.name, "ok": False, "workflows": 0})
+            continue
+        except Exception as exc:
+            # Keep an unexpected shape error isolated to its cluster too. The
+            # exception text is logged so malformed data is surfaced rather
+            # than becoming a mysteriously empty result.
+            log.exception(
+                "%s: could not convert Workflow response: %s; "
+                "discarding all %d item(s) for this cluster",
+                cluster.name,
+                exc,
+                len(items),
+            )
+            stats.append({"name": cluster.name, "ok": False, "workflows": 0})
+            continue
         rows.extend(cluster_rows)
         stats.append({"name": cluster.name, "ok": True, "workflows": len(cluster_rows)})
         log.info("%s: %d workflow(s)", cluster.name, len(cluster_rows))
