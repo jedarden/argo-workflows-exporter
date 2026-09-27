@@ -564,6 +564,52 @@ def test_successful_zero_row_cycle_publishes_pairable_empty_snapshot(monkeypatch
     _assert_published_counts_and_generation(meta, workflows_bytes, runs_bytes)
 
 
+def test_successful_zero_row_cycle_publishes_a_new_generation(monkeypatch):
+    """An empty successful cycle replaces the prior committed generation."""
+    generated_at = "2026-09-27T12:01:00Z"
+    cfg = _config([Cluster(name="ci"), Cluster(name="staging")])
+    _list(monkeypatch, {"ci": ([], True), "staging": ([], True)})
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+
+    s3 = _RecordingS3(_prior_generation())
+    before = dict(s3.objects)
+    old_meta = json.loads(before["argo/data/meta.json"])
+
+    assert main._run_cycle(cfg, s3) is True
+
+    assert s3.puts == 3
+    assert s3.uploaded_keys == [
+        "argo/data/workflows.parquet",
+        "argo/data/runs.parquet",
+        "argo/data/meta.json",
+    ]
+    assert all(
+        s3.objects[f"argo/data/{key}"] != before[f"argo/data/{key}"]
+        for key in main._PUBLICATION_OBJECTS
+    )
+
+    workflows_bytes = s3.objects["argo/data/workflows.parquet"]
+    runs_bytes = s3.objects["argo/data/runs.parquet"]
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    meta_schema.validate(meta)
+    assert meta["generation_id"] != old_meta["generation_id"]
+    assert meta["generated_at"] == generated_at
+    assert meta["workflows"] == 0
+    assert meta["runs"] == 1
+    assert {
+        stat["name"]: (stat["ok"], stat["workflows"])
+        for stat in meta["clusters"]
+    } == {"ci": (True, 0), "staging": (True, 0)}
+    assert (
+        parquet_io.parquet_bytes_to_table(
+            workflows_bytes, parquet_io.WORKFLOWS_SCHEMA
+        ).num_rows
+        == 0
+    )
+    assert _paired(meta, workflows_bytes, runs_bytes)
+    _assert_published_counts_and_generation(meta, workflows_bytes, runs_bytes)
+
+
 def test_empty_cluster_cycle_skips_publication_and_stays_starting():
     """The normal entry point rejects this config; direct callers still no-op safely."""
     cfg = _config([])
@@ -1339,6 +1385,24 @@ def test_failed_listing_preserves_the_previous_committed_generation(monkeypatch)
 
     assert s3.objects == before
     assert s3.puts == 0
+
+
+def test_all_cluster_listing_failures_preserve_the_previous_committed_generation(
+    monkeypatch,
+):
+    """Total collection failure must not replace a good generation with empty data."""
+    cfg = _config([Cluster(name="ci"), Cluster(name="staging")])
+    _list(monkeypatch, {"ci": ([], False), "staging": ([], False)})
+    s3 = _RecordingS3(_prior_generation())
+    before = dict(s3.objects)
+
+    assert main._run_cycle(cfg, s3) is False
+
+    assert s3.puts == 0
+    assert s3.uploaded_keys == []
+    assert s3.objects == before
+    for key in main._PUBLICATION_OBJECTS:
+        assert s3.objects[f"argo/data/{key}"] == before[f"argo/data/{key}"]
 
 
 def test_failed_serialization_preserves_the_previous_committed_generation(monkeypatch):
