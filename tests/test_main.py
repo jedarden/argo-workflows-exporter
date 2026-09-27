@@ -1332,6 +1332,141 @@ def test_poll_loop_logs_cycle_failure_and_continues_at_the_configured_interval(
     assert "injected cycle failure" in caplog.text
 
 
+def test_poll_loop_keeps_cycles_non_overlapping_and_waits_after_completion(
+    monkeypatch,
+):
+    cfg = replace(_config([Cluster(name="ci")]), poll_interval_seconds=5)
+    events = []
+    clock = [0]
+
+    class Stop:
+        def __init__(self):
+            self.stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, interval):
+            events.append(("wait", clock[0], interval))
+            clock[0] += interval
+            if len([event for event in events if event[0] == "start"]) == 2:
+                self.stopped = True
+            return self.stopped
+
+    class Health:
+        def record_success(self):
+            events.append(("success", clock[0]))
+
+    def cycle(_cfg, _s3):
+        # A cycle that takes longer than the configured delay. The second
+        # start must still wait for this cycle to finish and for the delay.
+        events.append(("start", clock[0]))
+        clock[0] += 7
+        events.append(("finish", clock[0]))
+        return True
+
+    monkeypatch.setattr(main, "_run_cycle", cycle)
+    main._run_poll_loop(cfg, object(), Stop(), Health())
+
+    assert events == [
+        ("start", 0),
+        ("finish", 7),
+        ("success", 7),
+        ("wait", 7, 5),
+        ("start", 12),
+        ("finish", 19),
+        ("success", 19),
+        ("wait", 19, 5),
+    ]
+
+
+def test_poll_loop_retries_failed_cycles_after_the_same_delay(monkeypatch):
+    cfg = replace(_config([Cluster(name="ci")]), poll_interval_seconds=5)
+    events = []
+    clock = [0]
+
+    class Stop:
+        def __init__(self):
+            self.stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, interval):
+            events.append(("wait", clock[0], interval))
+            clock[0] += interval
+            self.stopped = len([event for event in events if event[0] == "start"]) == 2
+            return self.stopped
+
+    class Health:
+        def record_success(self):
+            events.append(("success", clock[0]))
+
+    def cycle(_cfg, _s3):
+        events.append(("start", clock[0]))
+        clock[0] += 2
+        if len([event for event in events if event[0] == "start"]) == 1:
+            raise RuntimeError("injected cycle failure")
+        events.append(("finish", clock[0]))
+        return True
+
+    monkeypatch.setattr(main, "_run_cycle", cycle)
+    main._run_poll_loop(cfg, object(), Stop(), Health())
+
+    assert events == [
+        ("start", 0),
+        ("wait", 2, 5),
+        ("start", 7),
+        ("finish", 9),
+        ("success", 9),
+        ("wait", 9, 5),
+    ]
+
+
+def test_poll_loop_observes_terminal_workflow_before_ttl_deletion(monkeypatch):
+    """The TTL guarantee uses the effective start-to-start cadence."""
+    cfg = replace(_config([Cluster(name="ci")]), poll_interval_seconds=3)
+    clock = [0]
+    observations = []
+    terminal_at = 1
+    ttl_seconds = 7
+    cycle_duration = 4
+
+    class Stop:
+        def __init__(self):
+            self.stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, interval):
+            clock[0] += interval
+            self.stopped = len(observations) == 2
+            return self.stopped
+
+    class Health:
+        def record_success(self):
+            pass
+
+    def cycle(_cfg, _s3):
+        if clock[0] < terminal_at:
+            phase = "Running"
+        elif clock[0] < terminal_at + ttl_seconds:
+            phase = "Succeeded"
+        else:
+            phase = "Deleted"
+        observations.append((clock[0], phase))
+        clock[0] += cycle_duration
+        return True
+
+    monkeypatch.setattr(main, "_run_cycle", cycle)
+    main._run_poll_loop(cfg, object(), Stop(), Health())
+
+    # The first cycle starts at t=0 and takes 4s; the 3s post-cycle delay
+    # starts the next one at t=7. The terminal object survives until t=8.
+    assert observations == [(0, "Running"), (7, "Succeeded")]
+
+
 @pytest.mark.parametrize(
     ("log_level", "cycle_failure_is_logged"),
     [("ERROR", True), ("CRITICAL", False)],

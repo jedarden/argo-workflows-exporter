@@ -47,20 +47,38 @@ right now. Everything historical comes from `runs.parquet`.
 The ledger can only record what it observed. A workflow object exists from
 its creation until `finish + TTL`, so:
 
-> If `POLL_INTERVAL_SECONDS <= the shortest TTL in effect`, every run is
-> observed at least once **after it finished** and before it is deleted, and
-> the ledger therefore records its terminal phase.
+`POLL_INTERVAL_SECONDS` is the quiet time **after a cycle completes** before
+the next cycle starts. It is not the time from one cycle start to the next.
+Cycles run serially, so a slow cycle cannot overlap the following cycle. If a
+cycle takes `C` seconds, consecutive starts are separated by `C +
+POLL_INTERVAL_SECONDS`. A cycle that takes longer than the configured
+interval therefore simply makes the effective start-to-start cadence longer;
+there is no catch-up cycle. The same delay applies after an incomplete or
+failed cycle, so failures are retried on the next scheduled cycle rather than
+immediately.
+
+Assuming cycles continue to complete successfully, let `C_max` be the
+worst-case duration of a cycle. To guarantee that every run is observed at
+least once **after it finishes** and before it is deleted, configure:
+
+> `C_max + POLL_INTERVAL_SECONDS < the shortest TTL in effect`
 
 The proof is short: after a run finishes, its object survives for `TTL`
-seconds. If the polling period `P` is no greater than `TTL`, at least one
-poll must land inside that surviving window, and that poll sees the final
-state.
+seconds. In the worst case it finishes just after a cycle's listing, so the
+next listing begins only after that cycle's remaining runtime plus the
+post-cycle delay. If that effective cadence is shorter than `TTL`, the next
+poll lands inside the surviving window and sees the final state. The strict
+inequality leaves room for scheduling jitter and TTL-controller latency.
+
+A failed cycle cannot provide this guarantee for the workflows it failed to
+list; the condition describes the cadence between successful observations,
+not an outage or an unavailable cluster.
 
 Above that threshold the loss is silent — a missed run leaves no trace to
 count, so the ledger simply under-reports, most severely for the fastest and
 most successful runs. The default `POLL_INTERVAL_SECONDS=300` sits six times
-inside a 1800s success TTL, which leaves room for a slow cycle without
-crossing the line.
+inside a 1800s success TTL, leaving up to 1500 seconds for the worst-case
+cycle if that success TTL is the shortest one in effect.
 
 Two things that do **not** relax this:
 

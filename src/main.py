@@ -321,6 +321,13 @@ def _run_cycle(cfg: config.Config, s3) -> bool:
 
 
 def _run_poll_loop(cfg, s3, stop, health_state=None):
+    """Run non-overlapping cycles with a post-cycle retry delay.
+
+    ``poll_interval_seconds`` is measured after each cycle returns, whether
+    that cycle succeeded, returned an incomplete result, or raised. Keeping
+    the wait here (rather than scheduling another worker) means a slow cycle
+    cannot overlap the next one.
+    """
     if health_state is None:
         health_state = _HealthState(cfg.poll_interval_seconds)
     while not stop.is_set():

@@ -22,8 +22,10 @@ a **run ledger** that remembers each run past the deletion of the object it
 came from. Anything resembling a success rate, a duration trend or a failure
 count has to be read from the ledger.
 
-The ledger's accuracy depends on polling faster than the shortest TTL in
-effect — a run that starts and is deleted between two polls is never seen.
+The ledger's accuracy depends on the effective polling cadence fitting inside
+the shortest TTL in effect: the post-cycle delay plus the worst-case cycle
+duration must be shorter than that TTL. A run that starts and is deleted
+between two polls is never seen.
 [`docs/notes/ttl-and-observation-windows.md`](docs/notes/ttl-and-observation-windows.md)
 works through how to choose the interval.
 
@@ -131,6 +133,12 @@ A failed cycle does not advance the timestamp, so the endpoint becomes `stale`
 when the original success reaches `2 * POLL_INTERVAL_SECONDS` and remains
 unhealthy until a later cycle succeeds. A later success immediately returns the
 endpoint to HTTP 200.
+
+`POLL_INTERVAL_SECONDS` is the delay after each cycle returns, not a
+start-to-start deadline. The loop runs one cycle at a time, waits that delay
+after a success or failure, and then starts the next cycle. A cycle that takes
+longer than the configured interval therefore lengthens the effective cadence;
+it is never overlapped or immediately caught up.
 
 ## Development
 

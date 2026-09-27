@@ -56,7 +56,7 @@ ServiceAccount, and there is only one of those.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `POLL_INTERVAL_SECONDS` | `300` | Must be comfortably below the shortest `ttlStrategy` in effect on the clusters polled, or completed runs are deleted before they are ever seen — see [`ttl-and-observation-windows.md`](ttl-and-observation-windows.md) |
+| `POLL_INTERVAL_SECONDS` | `300` | Post-cycle delay; together with the worst-case cycle duration it must be comfortably below the shortest `ttlStrategy` in effect, or completed runs can be deleted before they are ever seen — see [`ttl-and-observation-windows.md`](ttl-and-observation-windows.md) |
 | `RUN_RETENTION_DAYS` | `7` | How long a run stays in `runs.parquet` after it was **last observed**, not after it started |
 | `HTTP_TIMEOUT_SECONDS` | `10` | per API request |
 | `LIST_PAGE_SIZE` | `500` | Kubernetes list page size; the exporter follows `continue` tokens to the end |
@@ -82,8 +82,8 @@ All numeric variables must parse as integers greater than zero.
 - **No cluster listing completes** — nothing is written at all, whether every
   cluster is unreachable or every listing is incomplete. `meta.json` keeps its
   previous `generated_at`, which is what makes the outage visible downstream.
-- **Any other exception** is logged with a traceback and the loop continues to
-  the next interval. The health heartbeat advances only after a cycle publishes
+- **Any other exception** is logged with a traceback and the loop waits the
+  configured post-cycle delay before continuing. The health heartbeat advances only after a cycle publishes
   all three output objects; once it is two polling intervals old, `/health`
   returns 503 until a later cycle succeeds.
 

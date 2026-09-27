@@ -9,9 +9,10 @@ runs are mostly green can present a listing that is mostly red, purely
 because the green ones were collected first.
 
 The ledger fixes that by remembering each run past the deletion of the object
-it came from. Its accuracy therefore depends on the poll interval being
-comfortably shorter than the shortest TTL in effect: a run that starts and is
-reaped entirely between two polls is never observed and never recorded. See
+it came from. Its accuracy therefore depends on the effective poll cadence —
+the post-cycle delay plus the worst-case cycle duration — being comfortably
+shorter than the shortest TTL in effect: a run that starts and is reaped
+entirely between two polls is never observed and never recorded. See
 `docs/notes/ttl-and-observation-windows.md`.
 """
 
