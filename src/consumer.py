@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from math import isfinite
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from . import meta_schema, parquet_io, s3io
 
@@ -327,3 +328,241 @@ def read_generation(
 # operation discoverable without making two public implementations.
 load_generation = read_generation
 read_publication = read_generation
+
+
+# These are the phase groups used by the historical metric helpers below.
+# ``workflows.parquet`` is intentionally not involved in any of them: it is a
+# point-in-time snapshot and TTL deletes make it a biased historical sample.
+_SUCCESS_PHASE = "Succeeded"
+_FAILURE_PHASES = frozenset(("Failed", "Error"))
+_TERMINAL_PHASES = frozenset((_SUCCESS_PHASE, *_FAILURE_PHASES))
+_TREND_BUCKETS = frozenset(("hour", "day", "week"))
+
+
+def _rows(publication: Publication | Mapping[str, Any], name: str, schema):
+    data = _publication_value(publication, name)
+    return parquet_io.parquet_bytes_to_table(data, schema).to_pylist()
+
+
+def current_snapshot_rows(publication: Publication | Mapping[str, Any]):
+    """Decode the current-state rows from ``workflows.parquet``.
+
+    This is the only row reader in this module that uses the snapshot file.
+    Callers should use it for live inventory views, never for rates, trends,
+    duration history, or outcome counts.
+    """
+
+    return _rows(publication, "workflows", parquet_io.WORKFLOWS_SCHEMA)
+
+
+def historical_run_rows(publication: Publication | Mapping[str, Any]):
+    """Decode retained run state from ``runs.parquet``.
+
+    The ledger has one current row per observed run and outlives the Workflow
+    object that produced it. Every historical metric helper is built on this
+    reader so a TTL-biased live listing cannot silently affect its result.
+    """
+
+    return _rows(publication, "runs", parquet_io.RUNS_SCHEMA)
+
+
+def _phase_counts(rows: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    return dict(Counter(row.get("phase") for row in rows if row.get("phase") is not None))
+
+
+def historical_phase_counts(publication: Publication | Mapping[str, Any]):
+    """Count workflow phases using the retained run ledger."""
+
+    return _phase_counts(historical_run_rows(publication))
+
+
+def _rate(numerator: int, denominator: int):
+    return numerator / denominator if denominator else None
+
+
+def _historical_rates(rows: list[Mapping[str, Any]]):
+    counts = _phase_counts(rows)
+    succeeded = counts.get(_SUCCESS_PHASE, 0)
+    failed = counts.get("Failed", 0)
+    errors = counts.get("Error", 0)
+    failures = failed + errors
+    terminal = sum(counts.get(phase, 0) for phase in _TERMINAL_PHASES)
+    return {
+        "total": len(rows),
+        "completed": terminal,
+        "succeeded": succeeded,
+        "failed": failures,
+        "error": errors,
+        "success_rate": _rate(succeeded, terminal),
+        "failure_rate": _rate(failures, terminal),
+        "completion_rate": _rate(terminal, len(rows)),
+    }
+
+
+def historical_rates(publication: Publication | Mapping[str, Any]):
+    """Return outcome rates calculated from ``runs.parquet``.
+
+    Success and failure rates use terminal runs as their denominator, so a
+    retained ``Running`` row does not make a completed-run rate look worse.
+    ``completion_rate`` reports the share of all retained rows that are
+    terminal.  Empty populations return ``None`` for rates rather than
+    manufacturing a zero-valued measurement.
+    """
+
+    return _historical_rates(historical_run_rows(publication))
+
+
+def _timestamp(row: Mapping[str, Any]):
+    # Finished time is the most useful event time for a run trend. Older or
+    # incomplete rows may not have it, so fall back to the ledger timestamps
+    # rather than dropping a retained run from every trend query.
+    for field in ("finished_at", "last_seen_at", "first_seen_at"):
+        value = row.get(field)
+        if not isinstance(value, str):
+            continue
+        try:
+            return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            continue
+    return None
+
+
+def _trend_period(value: datetime, bucket: str):
+    if bucket == "hour":
+        return value.strftime("%Y-%m-%dT%H:00:00Z")
+    if bucket == "day":
+        return value.strftime("%Y-%m-%d")
+    week_start = value - timedelta(days=value.weekday())
+    return week_start.strftime("%Y-%m-%d")
+
+
+def _historical_trends(rows: list[Mapping[str, Any]], bucket: str):
+    if bucket not in _TREND_BUCKETS:
+        choices = ", ".join(sorted(_TREND_BUCKETS))
+        raise ValueError(f"bucket must be one of: {choices}")
+
+    grouped = {}
+    for row in rows:
+        timestamp = _timestamp(row)
+        if timestamp is None:
+            continue
+        period = _trend_period(timestamp, bucket)
+        entry = grouped.setdefault(
+            period,
+            {"period": period, "total": 0, "succeeded": 0, "failed": 0, "error": 0},
+        )
+        entry["total"] += 1
+        phase = row.get("phase")
+        if phase == _SUCCESS_PHASE:
+            entry["succeeded"] += 1
+        elif phase == "Failed":
+            entry["failed"] += 1
+        elif phase == "Error":
+            entry["error"] += 1
+
+    trends = []
+    for period in sorted(grouped):
+        entry = grouped[period]
+        terminal = entry["succeeded"] + entry["failed"] + entry["error"]
+        entry["completed"] = terminal
+        entry["success_rate"] = _rate(entry["succeeded"], terminal)
+        entry["failure_rate"] = _rate(entry["failed"] + entry["error"], terminal)
+        trends.append(entry)
+    return trends
+
+
+def historical_trends(
+    publication: Publication | Mapping[str, Any], bucket: str = "day"
+):
+    """Group historical outcome rates by finish/ledger time from ``runs.parquet``."""
+
+    return _historical_trends(historical_run_rows(publication), bucket)
+
+
+def _historical_duration_history(rows: list[Mapping[str, Any]]):
+    history = []
+    for row in rows:
+        duration = row.get("duration_seconds")
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+            continue
+        history.append(
+            {
+                "cluster": row.get("cluster"),
+                "uid": row.get("uid"),
+                "name": row.get("name"),
+                "phase": row.get("phase"),
+                "started_at": row.get("started_at"),
+                "finished_at": row.get("finished_at"),
+                "duration_seconds": duration,
+            }
+        )
+    history.sort(
+        key=lambda row: (
+            row.get("finished_at") or row.get("started_at") or "",
+            row.get("cluster") or "",
+            row.get("uid") or "",
+        )
+    )
+    return history
+
+
+def historical_duration_history(publication: Publication | Mapping[str, Any]):
+    """Return completed-run durations retained in ``runs.parquet`` order."""
+
+    return _historical_duration_history(historical_run_rows(publication))
+
+
+def historical_failure_counts(
+    publication: Publication | Mapping[str, Any], field: str = "failure_class"
+):
+    """Count failure classes or fingerprints from retained failed runs.
+
+    ``field`` may be ``failure_class`` (the dashboard-friendly grouping) or
+    ``failure_fingerprint`` (the normalized error grouping). Missing taxonomy
+    data is grouped under ``unknown`` instead of silently dropping a failure.
+    """
+
+    if field not in {"failure_class", "failure_fingerprint"}:
+        raise ValueError("field must be failure_class or failure_fingerprint")
+    return _failure_counts(historical_run_rows(publication), field)
+
+
+def _failure_counts(rows: Iterable[Mapping[str, Any]], field: str):
+    counts = Counter()
+    for row in rows:
+        if row.get("phase") not in _FAILURE_PHASES:
+            continue
+        counts[row.get(field) or "unknown"] += 1
+    return dict(sorted(counts.items()))
+
+
+def historical_metrics(publication: Publication | Mapping[str, Any]):
+    """Return all historical dashboard measures from one ledger decode.
+
+    The returned mapping keeps current inventory separate: use
+    :func:`current_snapshot_rows` for that view. No field in this result is
+    derived from ``workflows.parquet``.
+    """
+
+    rows = historical_run_rows(publication)
+    return {
+        "rates": _historical_rates(rows),
+        "phase_counts": _phase_counts(rows),
+        "trends": _historical_trends(rows, "day"),
+        "duration_history": _historical_duration_history(rows),
+        "failure_counts": _failure_counts(rows, "failure_class"),
+        "failure_fingerprint_counts": _failure_counts(rows, "failure_fingerprint"),
+    }
+
+
+# Short names for consumers that already have a publication selected. Keep
+# the source-explicit names above as the canonical API and these aliases as a
+# convenience, not as alternate data-loading paths.
+snapshot_rows = current_snapshot_rows
+run_rows = historical_run_rows
+rates = historical_rates
+trends = historical_trends
+duration_history = historical_duration_history
+failure_counts = historical_failure_counts

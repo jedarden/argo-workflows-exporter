@@ -440,6 +440,13 @@ valid published generation.
    unavailable current cluster snapshot. Its identity is (`cluster`, `uid`) —
    join and deduplicate on the pair, never on `uid` alone.
 
+The consumer helpers in `src/consumer.py` make that split executable: use
+`current_snapshot_rows()` only for current inventory, and use
+`historical_rates()`, `historical_trends()`,
+`historical_duration_history()`, and `historical_failure_counts()` for
+historical measures. Those helpers decode only `runs.parquet`; they do not
+fall back to the live snapshot when a run has been reaped by TTL.
+
 The three objects are written in the order shown above — data objects first,
 `meta.json` last as the commit marker — but they are not an atomic S3
 transaction, and a failed upload can leave a new Parquet beside the old

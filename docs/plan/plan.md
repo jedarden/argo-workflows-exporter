@@ -47,6 +47,7 @@ private network path resolves from the pod. Nothing else is dialed.
 | `workflows.py` | Turn raw `Workflow` objects into flat rows: template, trigger, phase, duration, failing step. |
 | `ledger.py` | Fold each cycle's observations into the durable run record; expire by last-seen. |
 | `parquet_io.py` | Schemas, Parquet encode/decode, and schema conformance for records written by an older release in either output. |
+| `consumer.py` | Pair published generations; use `workflows.parquet` for current inventory and `runs.parquet` for every historical metric. |
 | `s3io.py` | Client construction, get/put. |
 | `main.py` | Poll loop, cycle orchestration, health endpoint, signal handling. |
 
