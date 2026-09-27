@@ -217,6 +217,43 @@ def test_an_observation_updates_only_its_own_cluster_row():
     assert ci["first_seen_at"] == prod["first_seen_at"] == _ts(1)
 
 
+def test_same_name_with_different_uids_keeps_and_updates_both_runs():
+    first_seen_at = _ts(2)
+    second_seen_at = _ts(1)
+    updated_at = _ts(0)
+
+    first_run = merge(
+        [],
+        [_observed(uid="run-1", phase="Running")],
+        first_seen_at,
+        7,
+    )
+    both_runs = merge(
+        first_run,
+        [_observed(uid="run-2", phase="Succeeded", duration_seconds=12)],
+        second_seen_at,
+        7,
+    )
+    kept = merge(
+        both_runs,
+        [_observed(uid="run-1", phase="Failed", message="run 1 failed")],
+        updated_at,
+        7,
+    )
+
+    rows = {(row["cluster"], row["uid"]): row for row in kept}
+    assert set(rows) == {("ci", "run-1"), ("ci", "run-2")}
+    assert rows["ci", "run-1"]["name"] == rows["ci", "run-2"]["name"]
+    assert rows["ci", "run-1"]["phase"] == "Failed"
+    assert rows["ci", "run-1"]["message"] == "run 1 failed"
+    assert rows["ci", "run-1"]["first_seen_at"] == first_seen_at
+    assert rows["ci", "run-1"]["last_seen_at"] == updated_at
+    assert rows["ci", "run-2"]["phase"] == "Succeeded"
+    assert rows["ci", "run-2"]["duration_seconds"] == 12
+    assert rows["ci", "run-2"]["first_seen_at"] == second_seen_at
+    assert rows["ci", "run-2"]["last_seen_at"] == second_seen_at
+
+
 def test_retention_is_decided_per_cluster_and_uid():
     """One cluster's stale run must neither carry nor drop the same-uid run
     in another cluster."""
