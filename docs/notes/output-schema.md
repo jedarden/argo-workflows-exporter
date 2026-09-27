@@ -165,7 +165,7 @@ apply the same schema to downloaded sidecars.
 | `version` | string | non-empty | the exporter release that wrote this generation; `"unknown"` if built without a VERSION file |
 | `generated_at` | string | RFC 3339 UTC, second resolution, literal `Z` (`%Y-%m-%dT%H:%M:%SZ`) | when this cycle ran — see the heartbeat note below |
 | `generation_id` | string | `<generated_at>` + `-` + 12 lowercase hex | this publication's identity — see below |
-| `poll_interval_seconds` | integer | ≥ 1 | the exporter's configured poll interval; what `generated_at`'s freshness should be judged against |
+| `poll_interval_seconds` | integer | ≥ 1 | the exporter's post-cycle delay; combine it with the consumer's `C_max` to judge `generated_at` freshness |
 | `run_retention_days` | integer | ≥ 1 | the configured `RUN_RETENTION_DAYS`; how long `runs.parquet` keeps unseen runs |
 | `clusters` | array | ≥ 1 entry | exactly one entry per configured cluster, in `CLUSTERS_JSON` order |
 | `clusters[].name` | string | non-empty | the cluster's `name` from `CLUSTERS_JSON` |
@@ -196,8 +196,36 @@ as if they were:
 
 `generated_at` doubles as the collection heartbeat: it is only written after
 at least one cluster completes its listing, so a consumer can detect a stalled
-or failing exporter by its age alone. `clusters[].ok` distinguishes a partial
-outage — everything else was still collected and written.
+or failing exporter by its age. `clusters[].ok` distinguishes a partial outage
+— everything else was still collected and written.
+
+### Heartbeat freshness
+
+The consumer must supply `C_max`, its configured upper bound for one complete
+exporter cycle. The effective cadence is:
+
+```text
+effective_cadence = C_max + meta.poll_interval_seconds
+age = consumer_now - meta.generated_at
+```
+
+The sidecar is **fresh** only while `age < effective_cadence`; it is **stale**
+at `age >= effective_cadence`. This is the same serial-cycle bound used for
+the observation-window calculation in
+[`ttl-and-observation-windows.md`](ttl-and-observation-windows.md): the poll
+interval is the quiet time after a cycle, and `C_max` accounts for the next
+cycle's runtime. The threshold is therefore not a hardcoded number and must
+not be replaced by the exporter health endpoint's separate probe policy.
+
+A cycle in which every cluster fails the listing writes nothing, so repeated
+failed cycles leave all three objects internally consistent while freezing
+`generated_at`. Generation pairing alone therefore does not establish
+currentness. When the sidecar is stale, the consumer must emit an operational
+alert containing the generation id, age, and threshold; hold the last complete
+paired generation as **last known data**; and mark it unavailable for current
+use. It must never present that held generation as current. If no complete
+generation has been held yet, current data is unavailable rather than an empty
+snapshot.
 
 `generation_id` identifies the publication as a whole: the same id is
 embedded in both Parquet files' file-level metadata, and all three objects of
@@ -246,9 +274,10 @@ outputs themselves.
 ### Consumer contract
 
 1. Read `meta.json` before interpreting either Parquet file.
-2. Check `generated_at` against the expected polling interval and the
-   consumer's freshness policy. Missing or stale metadata means current data is
-   unavailable for every cluster; the old Parquet is only a last-known snapshot.
+2. Check `generated_at` using the heartbeat freshness contract above. Missing
+   or stale metadata means current data is unavailable for every cluster; emit
+   an alert and hold the prior complete generation only as last-known data,
+   never as current data.
 3. **Check the generation pairing before mixing objects.** Compare
    `meta.json`'s `generation_id` with the `generation_id` in each Parquet
    file's file-level metadata (the Parquet footer alone —

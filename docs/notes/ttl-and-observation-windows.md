@@ -70,6 +70,19 @@ post-cycle delay. If that effective cadence is shorter than `TTL`, the next
 poll lands inside the surviving window and sees the final state. The strict
 inequality leaves room for scheduling jitter and TTL-controller latency.
 
+The same bound is the consumer-side heartbeat threshold. If `C_max` is the
+consumer's configured upper bound for a complete cycle, a `meta.json` sidecar
+is fresh only while:
+
+```text
+consumer_now - generated_at < C_max + POLL_INTERVAL_SECONDS
+```
+
+At equality or beyond, the consumer must treat the generation as stale. A
+failed cycle does not write a new sidecar, so this test catches the frozen
+heartbeat even though the previous `meta.json` and both Parquet footers still
+agree on one generation id.
+
 A failed cycle cannot provide this guarantee for the workflows it failed to
 list; the condition describes the cadence between successful observations,
 not an outage or an unavailable cluster.

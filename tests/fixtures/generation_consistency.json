@@ -133,5 +133,40 @@
       "run_uids": ["wf-ci", "wf-staging-old"],
       "unavailable_clusters": ["staging"]
     }
+  },
+  "stale": {
+    "description": "A complete but old publication passes pairing while its heartbeat says current data is unavailable.",
+    "meta": {
+      "version": "fixture",
+      "generated_at": "2026-09-27T11:50:00Z",
+      "generation_id": "2026-09-27T11:50:00Z-555555eeeeee",
+      "poll_interval_seconds": 300,
+      "run_retention_days": 7,
+      "clusters": [
+        {"name": "ci", "ok": true, "workflows": 1}
+      ],
+      "workflows": 1,
+      "runs": 1
+    },
+    "workflows": {
+      "generation_id": "2026-09-27T11:50:00Z-555555eeeeee",
+      "rows": [
+        {"uid": "wf-stale", "cluster": "ci", "phase": "Succeeded", "observed_at": "2026-09-27T11:50:00Z"}
+      ]
+    },
+    "runs": {
+      "generation_id": "2026-09-27T11:50:00Z-555555eeeeee",
+      "rows": [
+        {"uid": "wf-stale", "cluster": "ci", "phase": "Succeeded", "first_seen_at": "2026-09-27T11:49:00Z", "last_seen_at": "2026-09-27T11:50:00Z"}
+      ]
+    },
+    "expected": {
+      "accepted": true,
+      "fresh": false,
+      "selected": "complete",
+      "workflow_uids": ["wf-stale"],
+      "run_uids": ["wf-stale"],
+      "unavailable_clusters": []
+    }
   }
 }

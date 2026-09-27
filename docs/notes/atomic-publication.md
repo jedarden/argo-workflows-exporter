@@ -101,7 +101,7 @@ publishing `G_new`:
 | Failure | Objects written before abort | Stored state | Consumer-visible effect |
 |---|---|---|---|
 | a cluster listing fails (some clusters answered) | none | `G_old` intact | `meta.json`'s `clusters[].ok` marks the failed cluster; its rows are absent from the new snapshot but nothing is torn |
-| **every** cluster listing fails | none | `G_old` intact, nothing written | `generated_at` stops advancing — the outage signal |
+| **every** cluster listing fails | none | `G_old` intact, nothing written | `generated_at` stops advancing; once its age reaches `C_max + meta.poll_interval_seconds`, the consumer heartbeat is stale |
 | `runs.parquet` download fails (non-404) | none | `G_old` intact | only staleness; `G_old` is complete and self-consistent |
 | `workflows.parquet` PUT fails | none | `G_old` intact | none — the cycle aborted before the first write |
 | `runs.parquet` PUT fails | `workflows.parquet` | snapshot `G_new`, ledger and marker `G_old` | **torn**: `meta.json` pairs with the ledger but not the snapshot; detectable, see below |
@@ -137,7 +137,10 @@ Two things a torn state is **not**:
 
 - It is not silent. `meta.json` is never written to a torn generation, so
   `generated_at` — the freshness heartbeat — always names a cycle whose
-  three objects were published together.
+  three objects were published together. That only proves consistency, not
+  freshness: a complete old generation still becomes stale when its age
+  reaches the effective cadence defined in
+  [`output-schema.md`](output-schema.md#heartbeat-freshness).
 - It is not repaired in place. The exporter does not track which objects of
   a generation landed; it re-runs the whole cycle. Any in-place
   reconciliation would need its own state on storage and would only

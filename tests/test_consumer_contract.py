@@ -7,6 +7,7 @@ not mixed with the last complete generation.
 """
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,8 @@ from src import consumer, meta_schema, parquet_io
 
 
 FIXTURE_PATH = Path(__file__).with_name("fixtures") / "generation_consistency.json"
+_C_MAX_SECONDS = 60
+_AT_STALE_BOUNDARY = datetime(2026, 9, 27, 11, 56, tzinfo=timezone.utc)
 
 
 def _load_fixtures():
@@ -44,7 +47,7 @@ def fixtures():
 
 
 @pytest.mark.parametrize(
-    "case_name", ["complete", "torn", "zero_row", "failed_clusters"]
+    "case_name", ["complete", "torn", "zero_row", "failed_clusters", "stale"]
 )
 def test_fixture_sidecars_and_both_parquet_footers_are_executable(fixtures, case_name):
     case = fixtures[case_name]
@@ -110,6 +113,62 @@ def test_valid_non_torn_fixtures_are_selected_and_preserve_snapshot_semantics(
         # clusters are absent from this generation's current snapshot.
         assert {row["cluster"] for row in workflows} == {"ci"}
         assert {row["cluster"] for row in runs} == {"ci", "staging"}
+
+
+def test_stale_fixture_is_complete_but_fails_the_effective_cadence_policy(fixtures):
+    publication = _materialize(fixtures["stale"])
+    meta = publication.meta
+
+    assert consumer.is_complete_generation(publication)
+    assert fixtures["stale"]["expected"]["fresh"] is False
+    assert consumer.freshness_threshold_seconds(meta, _C_MAX_SECONDS) == 360
+    assert consumer.freshness_age_seconds(meta, _AT_STALE_BOUNDARY) == 360
+    assert consumer.is_fresh(meta, _AT_STALE_BOUNDARY, _C_MAX_SECONDS) is False
+    assert consumer.is_fresh(
+        meta, datetime(2026, 9, 27, 11, 55, 59, tzinfo=timezone.utc), _C_MAX_SECONDS
+    ) is True
+    previous = _materialize(fixtures["complete"])
+    assert (
+        consumer.select_generation(
+            publication,
+            previous,
+            max_cycle_seconds=_C_MAX_SECONDS,
+            now=_AT_STALE_BOUNDARY,
+        )
+        is previous
+    )
+
+
+def test_stale_fixture_holds_last_complete_generation_and_alerts(
+    fixtures, monkeypatch, caplog
+):
+    previous = _materialize(fixtures["complete"])
+    stale = _materialize(fixtures["stale"])
+    objects = _stored_objects(stale)
+    calls = []
+
+    def download(_s3, _bucket, key):
+        calls.append(key)
+        return objects.get(key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+    caplog.set_level("WARNING", logger="src.consumer")
+
+    selected = consumer.read_generation(
+        object(),
+        "bucket",
+        "argo/data",
+        previous,
+        max_cycle_seconds=_C_MAX_SECONDS,
+        now=datetime(2026, 9, 27, 12, 6, tzinfo=timezone.utc),
+    )
+
+    assert selected is previous
+    assert selected.meta["generation_id"] == fixtures["complete"]["meta"]["generation_id"]
+    assert calls == ["argo/data/meta.json"]
+    assert "stale meta.json candidate" in caplog.text
+    assert "age_seconds=960.000" in caplog.text
+    assert "freshness_threshold_seconds=360.000" in caplog.text
 
 
 def _stored_objects(publication, prefix="argo/data"):

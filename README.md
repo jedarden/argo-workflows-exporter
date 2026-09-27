@@ -67,7 +67,12 @@ Column definitions and the full consumer contract are in
 
 A cycle in which **no cluster completes its listing** writes nothing at all,
 rather than replacing good data with an empty snapshot. `meta.json`'s
-`generated_at` going stale is the signal that collection has stopped.
+`generated_at` going stale is the signal that collection has stopped. A
+consumer derives staleness from the effective cadence, not a fixed timeout:
+`age >= C_max + meta.poll_interval_seconds`, where `C_max` is its configured
+upper bound for one exporter cycle. It must alert, retain the last complete
+generation as last-known data, and never present that retained generation as
+current; generation-id agreement alone does not make a frozen heartbeat fresh.
 
 ## Access required
 

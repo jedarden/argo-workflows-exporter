@@ -5,7 +5,8 @@ The exporter publishes ``workflows.parquet``, ``runs.parquet``, and
 the generation check before interpreting either Parquet payload.  This module
 keeps downloaded payloads together as a :class:`Publication` and only returns
 a candidate when the sidecar and both Parquet footers name the same
-generation.
+generation. Freshness is a separate check: a complete generation can be
+ stale when repeated failed cycles leave all three objects unchanged.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from math import isfinite
 from typing import Any, Mapping
 
 from . import meta_schema, parquet_io, s3io
@@ -39,6 +42,58 @@ class Publication:
 # ``Generation`` is a useful name for callers that think of the selected
 # publication as a generation rather than a set of objects.
 Generation = Publication
+
+
+def freshness_threshold_seconds(meta: Mapping[str, Any], max_cycle_seconds) -> float:
+    """Return the freshness threshold derived from the effective cadence.
+
+    ``max_cycle_seconds`` is the consumer's configured upper bound for one
+    exporter cycle (``C_max``).  The publisher's post-cycle delay is carried
+    in ``meta.poll_interval_seconds``, so the effective cadence is
+    ``C_max + POLL_INTERVAL_SECONDS`` rather than a fixed timeout.
+    """
+
+    if (
+        isinstance(max_cycle_seconds, bool)
+        or not isinstance(max_cycle_seconds, (int, float))
+        or not isfinite(max_cycle_seconds)
+        or max_cycle_seconds < 0
+    ):
+        raise ValueError("max_cycle_seconds must be a finite non-negative number")
+
+    poll_interval = meta.get("poll_interval_seconds")
+    if isinstance(poll_interval, bool) or not isinstance(poll_interval, int) or poll_interval < 1:
+        raise ValueError("meta.poll_interval_seconds must be a positive integer")
+    return float(max_cycle_seconds + poll_interval)
+
+
+def freshness_age_seconds(meta: Mapping[str, Any], now: datetime) -> float:
+    """Return the UTC age of ``meta.generated_at`` at ``now``."""
+
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        raise ValueError("now must be a timezone-aware datetime")
+    generated_at = meta.get("generated_at")
+    if not isinstance(generated_at, str):
+        raise ValueError("meta.generated_at must be a UTC timestamp string")
+    try:
+        generated = datetime.strptime(generated_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError as exc:
+        raise ValueError("meta.generated_at must be a UTC timestamp string") from exc
+    return (now.astimezone(timezone.utc) - generated).total_seconds()
+
+
+def is_fresh(meta: Mapping[str, Any], now: datetime, max_cycle_seconds) -> bool:
+    """Whether a sidecar is younger than one effective polling cadence.
+
+    Equality is stale.  Once a failed cycle could have completed, the old
+    heartbeat is no longer evidence that current data exists.
+    """
+
+    return freshness_age_seconds(meta, now) < freshness_threshold_seconds(
+        meta, max_cycle_seconds
+    )
 
 
 def generation_ids(
@@ -100,16 +155,28 @@ def is_complete_generation(
 def select_generation(
     candidate: Publication | Mapping[str, Any] | None,
     last_complete: Publication | Mapping[str, Any] | None,
+    *,
+    max_cycle_seconds=None,
+    now: datetime | None = None,
 ) -> Publication | Mapping[str, Any] | None:
     """Select a candidate or retain the last complete publication.
 
-    A failed, missing, or torn candidate is never returned.  The previous
-    value is assumed to have come from an earlier successful call, so it is
-    returned by identity and is not reinterpreted or mixed with candidate
-    payloads.
+    A failed, missing, torn, or stale candidate is never returned.  When
+    ``max_cycle_seconds`` is supplied, freshness is checked against the
+    effective cadence derived from the candidate sidecar.  The previous value
+    is assumed to have come from an earlier successful call, so it is returned
+    by identity and is not reinterpreted or mixed with candidate payloads.
     """
 
-    return candidate if is_complete_generation(candidate) else last_complete
+    if not is_complete_generation(candidate):
+        return last_complete
+    if max_cycle_seconds is not None and not is_fresh(
+        _publication_value(candidate, "meta"),
+        datetime.now(timezone.utc) if now is None else now,
+        max_cycle_seconds,
+    ):
+        return last_complete
+    return candidate
 
 
 def _key(prefix: str, name: str) -> str:
@@ -122,14 +189,19 @@ def read_generation(
     bucket: str,
     prefix: str,
     last_complete: Publication | None = None,
+    *,
+    max_cycle_seconds=None,
+    now: datetime | None = None,
 ) -> Publication | None:
     """Read and select the newest paired publication from S3-compatible storage.
 
     ``meta.json`` is fetched first and acts as the commit marker.  Only after
-    it is present and decodable are the two Parquet objects fetched; their
-    complete payloads are then checked using footer metadata before this
-    function returns anything.  If any object is missing, malformed, or has a
-    different generation id, ``last_complete`` is retained.
+    it is present, decodable, and fresh are the two Parquet objects fetched;
+    their complete payloads are then checked using footer metadata before this
+    function returns anything.  If any object is missing, malformed, stale, or
+    has a different generation id, ``last_complete`` is retained.  Pass the
+    consumer's ``C_max`` as ``max_cycle_seconds`` to enable the freshness
+    check; without it this function provides only the pairing check.
 
     Storage errors other than a missing object still propagate: retrying an
     unavailable store is different from silently presenting stale data, and
@@ -146,6 +218,20 @@ def read_generation(
     except (TypeError, ValueError, UnicodeDecodeError, meta_schema.MetaSchemaError) as exc:
         log.warning("ignoring an invalid meta.json candidate: %s", exc)
         return last_complete
+
+    if max_cycle_seconds is not None:
+        checked_at = datetime.now(timezone.utc) if now is None else now
+        age = freshness_age_seconds(meta, checked_at)
+        threshold = freshness_threshold_seconds(meta, max_cycle_seconds)
+        if age >= threshold:
+            log.warning(
+                "stale meta.json candidate: generation_id=%s age_seconds=%.3f "
+                "freshness_threshold_seconds=%.3f; retaining last complete generation",
+                meta["generation_id"],
+                age,
+                threshold,
+            )
+            return last_complete
 
     # Keep this order explicit: the marker is read before either data object,
     # then both footers are available for one consistency decision.
