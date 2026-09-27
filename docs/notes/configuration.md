@@ -80,15 +80,15 @@ Remote `base_url` clusters do not use these files or this rotation behavior.
 
 ## Behavior
 
-| Variable | Default | Notes |
-|---|---|---|
-| `POLL_INTERVAL_SECONDS` | `300` | Post-cycle delay; together with the worst-case cycle duration it must be comfortably below the shortest `ttlStrategy` in effect, or completed runs can be deleted before they are ever seen — see [`ttl-and-observation-windows.md`](ttl-and-observation-windows.md) |
-| `RUN_RETENTION_DAYS` | `7` | How long a run stays in `runs.parquet` after it was **last observed**, not after it started |
-| `HTTP_TIMEOUT_SECONDS` | `10` | per API request |
-| `LIST_PAGE_SIZE` | `500` | Kubernetes list page size; the exporter follows `continue` tokens to the end |
-| `HEALTH_PORT` | `8080` | `GET /health`; see the [health endpoint contract](../../README.md#health-endpoint) for response fields and status codes |
-| `LOG_LEVEL` | `INFO` | Python logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (case-insensitive; `WARN` and `FATAL` are accepted aliases) |
-| `VERSION_FILE` | `VERSION` | read once at startup, reported in `meta.json`; missing, unreadable, or empty files publish version `"unknown"` |
+| Variable | Required | Default | Accepted values / notes |
+|---|---|---|---|
+| `POLL_INTERVAL_SECONDS` | no | `300` | integer greater than zero; post-cycle delay; together with the worst-case cycle duration it must be comfortably below the shortest `ttlStrategy` in effect, or completed runs can be deleted before they are ever seen — see [`ttl-and-observation-windows.md`](ttl-and-observation-windows.md) |
+| `RUN_RETENTION_DAYS` | no | `7` | integer greater than or equal to `1`, with no upper bound; how long a run stays in `runs.parquet` after it was **last observed**, not after it started |
+| `HTTP_TIMEOUT_SECONDS` | no | `10` | integer greater than zero; per API request |
+| `LIST_PAGE_SIZE` | no | `500` | integer greater than zero; Kubernetes list page size; the exporter follows `continue` tokens to the end |
+| `HEALTH_PORT` | no | `8080` | integer greater than zero; `GET /health`; see the [health endpoint contract](../../README.md#health-endpoint) for response fields and status codes |
+| `LOG_LEVEL` | no | `INFO` | Python logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (case-insensitive; `WARN` and `FATAL` are accepted aliases) |
+| `VERSION_FILE` | no | `VERSION` | read once at startup, reported in `meta.json`; missing, unreadable, or empty files publish version `"unknown"` |
 
 `DEST_S3_PREFIX` is normalized as an S3 key prefix, not a filesystem path. If
 the variable is omitted it is `argo/data`; if it is explicitly empty (or only
@@ -100,7 +100,13 @@ prefix followed by exactly one `/` and the object basename, or the basename
 alone at the bucket root. This yields `workflows.parquet`, `runs.parquet`, and
 `meta.json` at the same exact keys for reads and writes.
 
-All numeric variables must parse as integers greater than zero.
+All numeric variables must parse as integers greater than zero, except
+`RUN_RETENTION_DAYS`, whose lower bound is one day and whose upper bound is
+unlimited. The retention variable is optional: if it is omitted or blank, the
+exporter uses the seven-day default. A supplied non-integer, zero, or negative
+value raises a configuration error during startup; the process exits before
+starting the health endpoint, creating the S3 client, or entering the polling
+loop.
 
 ## Failure behavior
 

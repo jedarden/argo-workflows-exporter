@@ -20,6 +20,7 @@ _LOG_LEVEL_ALIASES = {
 
 _S3_ADDRESSING_STYLES = ("auto", "virtual", "path")
 _DEFAULT_DEST_S3_PREFIX = "argo/data"
+_DEFAULT_RUN_RETENTION_DAYS = 7
 
 
 def _require(name):
@@ -142,6 +143,11 @@ def _positive_int(name, default):
     return value
 
 
+def _run_retention_days():
+    """Load the optional retention window, whose minimum is one day."""
+    return _positive_int("RUN_RETENTION_DAYS", str(_DEFAULT_RUN_RETENTION_DAYS))
+
+
 def _log_level():
     raw = _optional("LOG_LEVEL", "INFO").upper()
     try:
@@ -186,7 +192,7 @@ def load() -> Config:
         ),
         version=_read_version(_optional("VERSION_FILE", "VERSION")),
         poll_interval_seconds=_positive_int("POLL_INTERVAL_SECONDS", "300"),
-        run_retention_days=_positive_int("RUN_RETENTION_DAYS", "7"),
+        run_retention_days=_run_retention_days(),
         http_timeout_seconds=_positive_int("HTTP_TIMEOUT_SECONDS", "10"),
         page_size=_positive_int("LIST_PAGE_SIZE", "500"),
         health_port=_positive_int("HEALTH_PORT", "8080"),

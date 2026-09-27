@@ -156,6 +156,67 @@ def test_log_level_defaults_to_info(monkeypatch):
     assert load().log_level == "INFO"
 
 
+def test_run_retention_days_defaults_when_unset(monkeypatch):
+    _env(monkeypatch, '[{"name": "ci", "base_url": "http://p:8001"}]')
+    monkeypatch.delenv("RUN_RETENTION_DAYS", raising=False)
+    assert load().run_retention_days == 7
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("1", 1), ("36500", 36500)])
+def test_run_retention_days_accepts_positive_integer_values(monkeypatch, raw, expected):
+    _env(
+        monkeypatch,
+        '[{"name": "ci", "base_url": "http://p:8001"}]',
+        RUN_RETENTION_DAYS=raw,
+    )
+    assert load().run_retention_days == expected
+
+
+def test_run_retention_days_rejects_malformed_value(monkeypatch):
+    _env(
+        monkeypatch,
+        '[{"name": "ci", "base_url": "http://p:8001"}]',
+        RUN_RETENTION_DAYS="seven",
+    )
+    with pytest.raises(ConfigError, match="RUN_RETENTION_DAYS must be an integer"):
+        load()
+
+
+@pytest.mark.parametrize("raw", ["0", "-1"])
+def test_run_retention_days_rejects_values_below_one(monkeypatch, raw):
+    _env(
+        monkeypatch,
+        '[{"name": "ci", "base_url": "http://p:8001"}]',
+        RUN_RETENTION_DAYS=raw,
+    )
+    with pytest.raises(ConfigError, match="RUN_RETENTION_DAYS must be greater than zero"):
+        load()
+
+
+def test_invalid_run_retention_days_fails_before_startup(monkeypatch, capsys):
+    _env(
+        monkeypatch,
+        '[{"name": "ci", "base_url": "http://p:8001"}]',
+        RUN_RETENTION_DAYS="0",
+    )
+    health_calls = []
+    s3_calls = []
+    monkeypatch.setattr(
+        main,
+        "_serve_health",
+        lambda *args, **kwargs: health_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(main.s3io, "client", lambda endpoint: s3_calls.append(endpoint))
+
+    with pytest.raises(SystemExit) as raised:
+        main.main()
+
+    assert raised.value.code == 1
+    assert health_calls == []
+    assert s3_calls == []
+    assert "config error: RUN_RETENTION_DAYS must be greater than zero" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
