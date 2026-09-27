@@ -1975,6 +1975,115 @@ def test_poll_loop_retries_failed_cycles_after_the_same_delay(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize(
+    "failure_kind",
+    [
+        pytest.param("incomplete", id="incomplete-listing"),
+        pytest.param("read", id="read-failure"),
+        pytest.param("compute", id="compute-failure"),
+        pytest.param("publish", id="publication-failure"),
+    ],
+)
+def test_poll_loop_applies_post_cycle_delay_to_each_failure_path(
+    monkeypatch, failure_kind
+):
+    """Every failed cycle waits before the next attempt, including real cycle failures."""
+    cfg = replace(_config([Cluster(name="ci")]), poll_interval_seconds=5)
+    events = []
+    clock = [0]
+    outcomes = []
+    s3 = _MemoryS3(_prior_generation())
+    _list(monkeypatch, {"ci": ([_workflow("wf-retry", "wf-retry")], True)})
+
+    if failure_kind == "incomplete":
+        listings = [([], False), ([_workflow("wf-retry", "wf-retry")], True)]
+
+        def list_items(_cluster, _path, _timeout, _page_size):
+            return listings.pop(0)
+
+        monkeypatch.setattr(workflows, "list_items", list_items)
+    elif failure_kind == "read":
+        real_fetch = workflows.fetch_workflows
+        failed = True
+
+        def fail_read(*args, **kwargs):
+            nonlocal failed
+            if failed:
+                failed = False
+                raise RuntimeError("injected read failure")
+            return real_fetch(*args, **kwargs)
+
+        monkeypatch.setattr(workflows, "fetch_workflows", fail_read)
+    elif failure_kind == "compute":
+        real_merge = ledger.merge
+        failed = True
+
+        def fail_compute(*args, **kwargs):
+            nonlocal failed
+            if failed:
+                failed = False
+                raise RuntimeError("injected compute failure")
+            return real_merge(*args, **kwargs)
+
+        monkeypatch.setattr(ledger, "merge", fail_compute)
+    else:
+        s3 = _FailNthPut(_prior_generation(), fail_on_put=1)
+
+    real_cycle = main._run_cycle
+
+    def timed_cycle(cycle_cfg, cycle_s3):
+        events.append(("start", clock[0]))
+        clock[0] += 2
+        try:
+            result = real_cycle(cycle_cfg, cycle_s3)
+        except Exception as exc:
+            outcomes.append(("error", exc))
+            raise
+        else:
+            outcomes.append(("return", result))
+            return result
+        finally:
+            events.append(("finish", clock[0]))
+
+    class Stop:
+        def __init__(self):
+            self.stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, interval):
+            events.append(("wait", clock[0], interval))
+            clock[0] += interval
+            if len([event for event in events if event[0] == "start"]) == 2:
+                self.stopped = True
+            return self.stopped
+
+    class Health:
+        def record_success(self):
+            events.append(("success", clock[0]))
+
+    monkeypatch.setattr(main, "_run_cycle", timed_cycle)
+    main._run_poll_loop(cfg, s3, Stop(), Health())
+
+    assert events == [
+        ("start", 0),
+        ("finish", 2),
+        ("wait", 2, 5),
+        ("start", 7),
+        ("finish", 9),
+        ("success", 9),
+        ("wait", 9, 5),
+    ]
+    assert len(outcomes) == 2
+    if failure_kind == "incomplete":
+        assert outcomes[0] == ("return", False)
+    else:
+        assert outcomes[0][0] == "error"
+        assert outcomes[0][1].cycle_failure_phase == failure_kind
+    assert outcomes[1] == ("return", True)
+
+
 def test_poll_loop_observes_terminal_workflow_before_ttl_deletion(monkeypatch):
     """The TTL guarantee uses the effective start-to-start cadence."""
     cfg = replace(_config([Cluster(name="ci")]), poll_interval_seconds=3)
