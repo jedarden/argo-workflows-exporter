@@ -15,6 +15,52 @@ log = logging.getLogger(__name__)
 
 HEALTH_STALE_AFTER_MULTIPLIER = 2
 _ready = threading.Event()
+_PUBLICATION_OBJECTS = ("workflows.parquet", "runs.parquet", "meta.json")
+
+
+def _cluster_names(cfg):
+    return [cluster.name for cluster in cfg.clusters]
+
+
+def _failed_cluster_names(cluster_stats):
+    return [stat["name"] for stat in cluster_stats if not stat["ok"]]
+
+
+def _annotate_cycle_failure(exc, phase, affected_clusters, failed_clusters, published, skipped):
+    """Attach cycle context without changing the original exception type."""
+    exc.cycle_failure_phase = phase
+    exc.cycle_affected_clusters = affected_clusters
+    exc.cycle_failed_clusters = failed_clusters
+    exc.cycle_publication = "partial" if published else "skipped"
+    exc.cycle_published_objects = published
+    exc.cycle_skipped_objects = skipped
+
+
+def _log_cycle_failure(
+    phase,
+    affected_clusters,
+    failed_clusters,
+    published,
+    skipped,
+    exc=None,
+):
+    message = (
+        "cycle failed: failure_phase=%s affected_clusters=%s failed_clusters=%s "
+        "publication=%s published_objects=%s skipped_objects=%s; "
+        "publication will be retried next interval"
+    )
+    args = (
+        phase,
+        ",".join(affected_clusters) or "none",
+        ",".join(failed_clusters) or "none",
+        "partial" if published else "skipped",
+        ",".join(published) or "none",
+        ",".join(skipped) or "none",
+    )
+    if exc is None:
+        log.error(message, *args)
+    else:
+        log.exception(message, *args)
 
 
 class _HealthState:
@@ -179,72 +225,96 @@ def _run_cycle(cfg: config.Config, s3) -> bool:
        `generation_id`, so a consumer can detect the torn set a mid-phase
        failure leaves behind and hold its previous good generation.
     """
-    generated_at = _now()
-    # Second-resolution timestamps collide if two cycles ever run that close
-    # together; the random suffix makes each publication's id its own.
-    generation_id = f"{generated_at}-{uuid.uuid4().hex[:12]}"
-
-    rows, cluster_stats = workflows.fetch_workflows(
-        cfg.clusters, cfg.namespace, cfg.http_timeout_seconds, cfg.page_size, generated_at
-    )
-
-    if not any(c["ok"] for c in cluster_stats):
-        # Nothing answered. Writing now would replace a good snapshot with an
-        # empty one and stamp meta.json fresh -- i.e. it would report an
-        # outage as "zero workflows, up to date". Leaving every object
-        # untouched instead makes meta.json's generated_at go stale, which is
-        # the signal a consumer can actually act on.
-        log.error("no cluster answered this cycle; leaving stored objects untouched")
-        return False
-
-    runs_key = f"{cfg.dest_prefix}/runs.parquet"
-    stored = parquet_io.parquet_bytes_to_table(
-        s3io.download_bytes(s3, cfg.dest.bucket, runs_key), parquet_io.RUNS_SCHEMA
-    )
-    merged = ledger.merge(stored.to_pylist(), rows, generated_at, cfg.run_retention_days)
-
-    workflows_payload = parquet_io.table_to_parquet_bytes(
-        rows, parquet_io.WORKFLOWS_SCHEMA, generation_id
-    )
-    runs_payload = parquet_io.table_to_parquet_bytes(
-        merged, parquet_io.RUNS_SCHEMA, generation_id
-    )
-    meta = {
-        "version": cfg.version,
-        "generated_at": generated_at,
-        "generation_id": generation_id,
-        "poll_interval_seconds": cfg.poll_interval_seconds,
-        "run_retention_days": cfg.run_retention_days,
-        "clusters": cluster_stats,
-        "workflows": len(rows),
-        "runs": len(merged),
-    }
-    # The sidecar is the commit marker: consumers parse it before either
-    # Parquet file, so a shape regression would publish a generation that
-    # misdescribes itself. This runs in the compute phase -- a refusal here
-    # has written nothing, and the next cycle simply retries.
-    meta_schema.validate(meta)
-    meta_payload = json.dumps(meta).encode()
-
+    phase = "read"
+    cluster_stats = []
     published = []
-    uploads = (
-        (f"{cfg.dest_prefix}/workflows.parquet", workflows_payload, "application/octet-stream"),
-        (runs_key, runs_payload, "application/octet-stream"),
-        (f"{cfg.dest_prefix}/meta.json", meta_payload, "application/json"),
-    )
     try:
-        for key, payload, content_type in uploads:
+        generated_at = _now()
+        # Second-resolution timestamps collide if two cycles ever run that close
+        # together; the random suffix makes each publication's id its own.
+        generation_id = f"{generated_at}-{uuid.uuid4().hex[:12]}"
+
+        rows, cluster_stats = workflows.fetch_workflows(
+            cfg.clusters, cfg.namespace, cfg.http_timeout_seconds, cfg.page_size, generated_at
+        )
+
+        if not any(c["ok"] for c in cluster_stats):
+            # Nothing answered. Writing now would replace a good snapshot with an
+            # empty one and stamp meta.json fresh -- i.e. it would report an
+            # outage as "zero workflows, up to date". Leaving every object
+            # untouched instead makes meta.json's generated_at go stale, which is
+            # the signal a consumer can actually act on.
+            failed_clusters = _failed_cluster_names(cluster_stats) or _cluster_names(cfg)
+            _log_cycle_failure(
+                "read",
+                _cluster_names(cfg),
+                failed_clusters,
+                [],
+                list(_PUBLICATION_OBJECTS),
+            )
+            return False
+
+        runs_key = f"{cfg.dest_prefix}/runs.parquet"
+        stored = parquet_io.parquet_bytes_to_table(
+            s3io.download_bytes(s3, cfg.dest.bucket, runs_key), parquet_io.RUNS_SCHEMA
+        )
+
+        phase = "compute"
+        merged = ledger.merge(stored.to_pylist(), rows, generated_at, cfg.run_retention_days)
+
+        workflows_payload = parquet_io.table_to_parquet_bytes(
+            rows, parquet_io.WORKFLOWS_SCHEMA, generation_id
+        )
+        runs_payload = parquet_io.table_to_parquet_bytes(
+            merged, parquet_io.RUNS_SCHEMA, generation_id
+        )
+        meta = {
+            "version": cfg.version,
+            "generated_at": generated_at,
+            "generation_id": generation_id,
+            "poll_interval_seconds": cfg.poll_interval_seconds,
+            "run_retention_days": cfg.run_retention_days,
+            "clusters": cluster_stats,
+            "workflows": len(rows),
+            "runs": len(merged),
+        }
+        # The sidecar is the commit marker: consumers parse it before either
+        # Parquet file, so a shape regression would publish a generation that
+        # misdescribes itself. This runs in the compute phase -- a refusal here
+        # has written nothing, and the next cycle simply retries.
+        meta_schema.validate(meta)
+        meta_payload = json.dumps(meta).encode()
+
+        phase = "publish"
+        uploads = (
+            (f"{cfg.dest_prefix}/workflows.parquet", workflows_payload, "application/octet-stream"),
+            (runs_key, runs_payload, "application/octet-stream"),
+            (f"{cfg.dest_prefix}/meta.json", meta_payload, "application/json"),
+        )
+        for index, (key, payload, content_type) in enumerate(uploads):
             s3io.upload_bytes(s3, cfg.dest.bucket, key, payload, content_type)
-            published.append(key)
-    except Exception:
-        log.exception(
-            "publication of generation %s aborted after writing [%s]; objects still on "
-            "the old generation: [%s] -- the stored set is torn and detectable by its "
-            "mismatched generation_ids until the next successful cycle republishes "
-            "all three",
-            generation_id,
-            ", ".join(published) or "none",
-            ", ".join(key for key, _, _ in uploads if key not in published),
+            published.append(_PUBLICATION_OBJECTS[index])
+    except Exception as exc:
+        failed_clusters = _failed_cluster_names(cluster_stats)
+        affected_clusters = _cluster_names(cfg)
+        if not failed_clusters and phase == "read":
+            failed_clusters = affected_clusters
+        skipped = [name for name in _PUBLICATION_OBJECTS if name not in published]
+        _annotate_cycle_failure(
+            exc,
+            phase,
+            affected_clusters,
+            failed_clusters,
+            published,
+            skipped,
+        )
+        _log_cycle_failure(
+            phase,
+            affected_clusters,
+            failed_clusters,
+            published,
+            skipped,
+            exc,
         )
         raise
     return True
@@ -260,11 +330,18 @@ def _run_poll_loop(cfg, s3, stop, health_state=None):
                 log.info("cycle completed")
             else:
                 log.warning("cycle did not complete, will retry next interval")
-        except Exception:
+        except Exception as exc:
             if stop.is_set():
-                log.exception("cycle failed during shutdown")
+                log.error("cycle failed during shutdown; see cycle failure context above")
+            elif not getattr(exc, "cycle_failure_phase", None):
+                log.exception(
+                    "cycle failed, will retry next interval: failure_phase=unknown affected_clusters=%s "
+                    "failed_clusters=unknown publication=skipped; "
+                    "publication will be retried next interval",
+                    ",".join(_cluster_names(cfg)) or "none",
+                )
             else:
-                log.exception("cycle failed, will retry next interval")
+                log.error("cycle failed; see cycle failure context above")
         stop.wait(cfg.poll_interval_seconds)
 
 
@@ -275,7 +352,14 @@ def main():
         print(f"config error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    logging.basicConfig(level=cfg.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=cfg.log_level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    # basicConfig is a no-op when an embedding process already installed
+    # handlers. Set the root level explicitly so LOG_LEVEL still controls
+    # exporter records in that case.
+    logging.getLogger().setLevel(cfg.log_level)
     log.info(
         "polling %d cluster(s) every %ds, writing to s3://%s/%s",
         len(cfg.clusters), cfg.poll_interval_seconds, cfg.dest.bucket, cfg.dest_prefix,

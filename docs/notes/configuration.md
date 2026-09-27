@@ -61,7 +61,7 @@ ServiceAccount, and there is only one of those.
 | `HTTP_TIMEOUT_SECONDS` | `10` | per API request |
 | `LIST_PAGE_SIZE` | `500` | Kubernetes list page size; the exporter follows `continue` tokens to the end |
 | `HEALTH_PORT` | `8080` | `GET /health`; see the [health endpoint contract](../../README.md#health-endpoint) for response fields and status codes |
-| `LOG_LEVEL` | `INFO` | |
+| `LOG_LEVEL` | `INFO` | Python logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (case-insensitive; `WARN` and `FATAL` are accepted aliases) |
 | `VERSION_FILE` | `VERSION` | read once at startup, reported in `meta.json` |
 
 All numeric variables must parse as integers greater than zero.
@@ -86,6 +86,15 @@ All numeric variables must parse as integers greater than zero.
   the next interval. The health heartbeat advances only after a cycle publishes
   all three output objects; once it is two polling intervals old, `/health`
   returns 503 until a later cycle succeeds.
+
+Every failed cycle emits an error record with `failure_phase` (`read`,
+`compute`, or `publish`), `affected_clusters`, and `publication`. The latter
+is `skipped` when no output object was written, or `partial` with the names of
+the objects written and still skipped when an upload failed partway through.
+An all-unavailable collection is a read-phase failure with publication
+skipped; a partial cluster collection that still publishes is logged by the
+collector with the unavailable cluster names and is not treated as a failed
+publication.
 
 See [`output-schema.md`](output-schema.md#consumer-contract) for the required
 consumer handling of fresh, partial, and unavailable snapshots.

@@ -86,6 +86,13 @@ Retries exist at two layers, and neither one retries a *publication*:
   this too — it returns 200 only after a cycle that published all three
   objects, so a pod stuck failing its publish reports 503.
 
+The error record identifies `failure_phase` (`read`, `compute`, or `publish`),
+the `affected_clusters`, and `publication`. Publication is `skipped` when
+the failure occurred before the first PUT, or `partial` when one or more
+objects landed before an upload failed; `published_objects` and
+`skipped_objects` name the exact members of the three-object set in either
+case.
+
 ## What each failure leaves behind
 
 Assume a previous complete generation `G_old` on storage, and a cycle

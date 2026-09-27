@@ -694,6 +694,35 @@ def test_poll_loop_logs_cycle_failure_and_continues_at_the_configured_interval(
     assert "injected cycle failure" in caplog.text
 
 
+def test_failed_read_cycle_logs_clusters_phase_and_skipped_publication(monkeypatch, caplog):
+    cfg = _config([Cluster(name="ci"), Cluster(name="staging")])
+    _list(monkeypatch, {"ci": ([], False), "staging": ([], False)})
+
+    with caplog.at_level("ERROR", logger="src.main"):
+        assert main._run_cycle(cfg, _MemoryS3()) is False
+
+    assert "failure_phase=read" in caplog.text
+    assert "affected_clusters=ci,staging" in caplog.text
+    assert "failed_clusters=ci,staging" in caplog.text
+    assert "publication=skipped" in caplog.text
+    assert "published_objects=none" in caplog.text
+    assert "skipped_objects=workflows.parquet,runs.parquet,meta.json" in caplog.text
+
+
+def test_failed_publish_logs_phase_and_partial_publication(monkeypatch, caplog):
+    s3 = _FailNthPut(_MemoryS3().objects, fail_on_put=2)
+    _list(monkeypatch, {"ci": ([_workflow("wf", "wf")], True)})
+
+    with caplog.at_level("ERROR", logger="src.main"), pytest.raises(ClientError):
+        main._run_cycle(_config([Cluster(name="ci")]), s3)
+
+    assert "failure_phase=publish" in caplog.text
+    assert "affected_clusters=ci" in caplog.text
+    assert "publication=partial" in caplog.text
+    assert "published_objects=workflows.parquet" in caplog.text
+    assert "skipped_objects=runs.parquet,meta.json" in caplog.text
+
+
 def test_poll_loop_exits_after_shutdown_during_sleep(monkeypatch):
     cfg = _config([Cluster(name="ci")])
     attempts = []

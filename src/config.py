@@ -7,6 +7,18 @@ class ConfigError(Exception):
     pass
 
 
+_LOG_LEVEL_ALIASES = {
+    "CRITICAL": "CRITICAL",
+    "ERROR": "ERROR",
+    "FATAL": "CRITICAL",
+    "WARN": "WARNING",
+    "WARNING": "WARNING",
+    "INFO": "INFO",
+    "DEBUG": "DEBUG",
+    "NOTSET": "NOTSET",
+}
+
+
 def _require(name):
     value = os.environ.get(name, "").strip()
     if not value:
@@ -111,6 +123,15 @@ def _positive_int(name, default):
     return value
 
 
+def _log_level():
+    raw = _optional("LOG_LEVEL", "INFO").upper()
+    try:
+        return _LOG_LEVEL_ALIASES[raw]
+    except KeyError:
+        allowed = ", ".join(sorted(_LOG_LEVEL_ALIASES))
+        raise ConfigError(f"LOG_LEVEL must be one of {allowed}, got {raw!r}")
+
+
 def load() -> Config:
     clusters = _parse_clusters(_require("CLUSTERS_JSON"))
 
@@ -136,5 +157,5 @@ def load() -> Config:
         http_timeout_seconds=_positive_int("HTTP_TIMEOUT_SECONDS", "10"),
         page_size=_positive_int("LIST_PAGE_SIZE", "500"),
         health_port=_positive_int("HEALTH_PORT", "8080"),
-        log_level=_optional("LOG_LEVEL", "INFO"),
+        log_level=_log_level(),
     )

@@ -117,6 +117,34 @@ def test_s3_defaults_are_applied(monkeypatch):
     assert cfg.dest_prefix == "argo/data"
 
 
+def test_log_level_defaults_to_info(monkeypatch):
+    _env(monkeypatch, '[{"name": "ci", "base_url": "http://p:8001"}]')
+    assert load().log_level == "INFO"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("debug", "DEBUG"), ("WARNING", "WARNING"), ("warn", "WARNING"), ("fatal", "CRITICAL")],
+)
+def test_log_level_is_normalized(monkeypatch, raw, expected):
+    _env(
+        monkeypatch,
+        '[{"name": "ci", "base_url": "http://p:8001"}]',
+        LOG_LEVEL=raw,
+    )
+    assert load().log_level == expected
+
+
+def test_invalid_log_level_fails_fast(monkeypatch):
+    _env(
+        monkeypatch,
+        '[{"name": "ci", "base_url": "http://p:8001"}]',
+        LOG_LEVEL="verbose",
+    )
+    with pytest.raises(ConfigError, match="LOG_LEVEL"):
+        load()
+
+
 def test_s3_addressing_style_can_be_overridden(monkeypatch):
     _env(
         monkeypatch,
