@@ -1,8 +1,11 @@
+import json
 from pathlib import Path
 
 import pytest
 
+from src import config, main
 from src.config import ConfigError, load
+from tests.test_main import _MemoryS3, _list, _workflow
 
 _REQUIRED = {
     "DEST_S3_ENDPOINT": "https://s3.example.com",
@@ -199,6 +202,38 @@ def test_version_file_contents_are_read_and_stripped(monkeypatch, tmp_path):
     version_file.write_text("  1.2.3\n")
     _env(monkeypatch, '[{"name": "ci", "base_url": "http://p:8001"}]', VERSION_FILE=str(version_file))
     assert load().version == "1.2.3"
+
+
+def test_loaded_version_is_published_and_read_once_at_startup(monkeypatch, tmp_path):
+    version_file = tmp_path / "version"
+    version_file.write_text("1.2.3\n")
+    _env(monkeypatch, '[{"name": "ci", "base_url": "http://p:8001"}]', VERSION_FILE=str(version_file))
+
+    reads = []
+    read_version = config._read_version
+
+    def record_read(path):
+        reads.append(path)
+        return read_version(path)
+
+    monkeypatch.setattr(config, "_read_version", record_read)
+    cfg = load()
+    assert cfg.version == "1.2.3"
+
+    _list(monkeypatch, {"ci": ([_workflow("wf", "wf")], True)})
+    s3 = _MemoryS3()
+    monkeypatch.setattr(main, "_now", lambda: "2026-09-27T12:00:00Z")
+    assert main._run_cycle(cfg, s3) is True
+    first_meta = json.loads(s3.objects["argo/data/meta.json"])
+
+    version_file.write_text("9.9.9\n")
+    monkeypatch.setattr(main, "_now", lambda: "2026-09-27T12:05:00Z")
+    assert main._run_cycle(cfg, s3) is True
+    second_meta = json.loads(s3.objects["argo/data/meta.json"])
+
+    assert first_meta["version"] == "1.2.3"
+    assert second_meta["version"] == "1.2.3"
+    assert reads == [str(version_file)]
 
 
 def test_missing_version_file_falls_back_to_unknown(monkeypatch, tmp_path):
