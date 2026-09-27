@@ -488,3 +488,54 @@ def test_read_generation_retains_the_last_complete_generation_for_a_torn_publica
     assert parquet_io.parquet_bytes_to_table(
         selected.workflows, parquet_io.WORKFLOWS_SCHEMA
     ).to_pylist()[0]["uid"] == "wf-complete"
+
+
+def test_overlapping_writers_never_expose_an_interleaved_generation(
+    fixtures, monkeypatch, caplog
+):
+    """An interleaved publication is held until one writer is complete.
+
+    Writer A and writer B each publish the three objects in the documented
+    order, but their PUTs overlap.  The consumer must retain the last complete
+    generation for every intermediate object set, including the case where A
+    advances the marker after B's data objects have landed.
+    """
+    previous = _materialize(fixtures["complete"])
+    writer_a = _materialize(fixtures["recovered_cluster"])
+    writer_b = _materialize(fixtures["zero_row"])
+    objects = _stored_objects(previous)
+
+    def download(_s3, _bucket, key):
+        return objects.get(key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+    caplog.set_level("WARNING", logger="src.consumer")
+
+    updates = [
+        ("workflows.parquet", writer_a.workflows),
+        ("workflows.parquet", writer_b.workflows),
+        ("runs.parquet", writer_a.runs),
+        ("runs.parquet", writer_b.runs),
+        # A's marker now describes B's data objects: a mixed generation.
+        ("meta.json", json.dumps(writer_a.meta).encode()),
+    ]
+    for name, payload in updates:
+        objects[f"argo/data/{name}"] = payload
+        assert consumer.read_generation(
+            object(), "bucket", "argo/data", previous
+        ) is previous
+
+    assert "rejecting inconsistent publication generation ids" in caplog.text
+
+    # Once B's marker lands, all three objects agree and only then may the
+    # consumer advance.  No rows from A leaked into the selected publication.
+    objects["argo/data/meta.json"] = json.dumps(writer_b.meta).encode()
+    selected = consumer.read_generation(object(), "bucket", "argo/data", previous)
+    assert selected is not None
+    assert selected.meta["generation_id"] == writer_b.meta["generation_id"]
+    assert [row["uid"] for row in parquet_io.parquet_bytes_to_table(
+        selected.workflows, parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()] == []
+    assert [row["uid"] for row in parquet_io.parquet_bytes_to_table(
+        selected.runs, parquet_io.RUNS_SCHEMA
+    ).to_pylist()] == []

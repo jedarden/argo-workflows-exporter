@@ -206,7 +206,20 @@ def select_generation(
     by identity and is not reinterpreted or mixed with candidate payloads.
     """
 
-    if not is_complete_generation(candidate):
+    ids = generation_ids(candidate) if candidate is not None else None
+    if (
+        ids is None
+        or not all(value is not None for value in ids.values())
+        or len(set(ids.values())) != 1
+    ):
+        if ids is not None and len(set(ids.values())) > 1:
+            log.warning(
+                "rejecting inconsistent publication generation ids: "
+                "meta=%r workflows=%r runs=%r; retaining last complete generation",
+                ids["meta"],
+                ids["workflows"],
+                ids["runs"],
+            )
         return last_complete
     if max_cycle_seconds is not None and not is_fresh(
         _publication_value(candidate, "meta"),
