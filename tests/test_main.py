@@ -926,6 +926,111 @@ def _one_cluster_state(monkeypatch, s3):
     return main._run_cycle(_config([Cluster(name="ci")]), s3)
 
 
+def _generationless_runs_fixture():
+    return json.loads(
+        (Path(__file__).with_name("fixtures") / "runs_pre_generation_id.json").read_text(
+            encoding="utf-8"
+        )
+    )["rows"]
+
+
+def test_cycle_reuses_generationless_runs_fixture_and_publishes_one_fresh_generation(
+    monkeypatch,
+):
+    """A footerless ledger is reusable history, not a publication identity."""
+    generated_at = "2026-09-27T12:00:00Z"
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-01T00:00:00Z")
+    _list(
+        monkeypatch,
+        {
+            "ci": (
+                [
+                    _workflow(
+                        "wf-legacy-reused",
+                        "legacy-build-abcde",
+                        phase="Succeeded",
+                        finishedAt="2026-09-25T10:06:02Z",
+                        message="completed",
+                    ),
+                    _workflow("wf-new", "new-build-abcde"),
+                ],
+                True,
+            )
+        },
+    )
+    legacy_bytes = parquet_io.table_to_parquet_bytes(
+        _generationless_runs_fixture(), parquet_io.RUNS_SCHEMA
+    )
+    assert parquet_io.read_generation_id(legacy_bytes) is None
+    s3 = _MemoryS3({"argo/data/runs.parquet": legacy_bytes})
+
+    assert main._run_cycle(_config([Cluster(name="ci")]), s3) is True
+    assert s3.puts == 3
+    assert set(s3.objects) == {
+        "argo/data/workflows.parquet",
+        "argo/data/runs.parquet",
+        "argo/data/meta.json",
+    }
+
+    meta = json.loads(s3.objects["argo/data/meta.json"])
+    meta_schema.validate(meta)
+    generation_ids = {
+        meta["generation_id"],
+        parquet_io.read_generation_id(s3.objects["argo/data/workflows.parquet"]),
+        parquet_io.read_generation_id(s3.objects["argo/data/runs.parquet"]),
+    }
+    assert len(generation_ids) == 1
+    assert meta["generation_id"].startswith(f"{generated_at}-")
+
+    workflows = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/workflows.parquet"], parquet_io.WORKFLOWS_SCHEMA
+    ).to_pylist()
+    runs = parquet_io.parquet_bytes_to_table(
+        s3.objects["argo/data/runs.parquet"], parquet_io.RUNS_SCHEMA
+    ).to_pylist()
+    assert {row["uid"] for row in workflows} == {"wf-legacy-reused", "wf-new"}
+    runs_by_uid = {row["uid"]: row for row in runs}
+    assert set(runs_by_uid) == {"wf-legacy-reused", "wf-legacy-retained", "wf-new"}
+    assert runs_by_uid["wf-legacy-reused"]["first_seen_at"] == "2026-09-25T10:00:05Z"
+    assert runs_by_uid["wf-legacy-reused"]["last_seen_at"] == generated_at
+    assert runs_by_uid["wf-legacy-retained"]["last_seen_at"] == "2026-09-24T11:01:05Z"
+    assert runs_by_uid["wf-new"]["first_seen_at"] == generated_at
+
+
+def test_failed_cycle_after_generationless_upgrade_preserves_prior_publication(
+    monkeypatch,
+):
+    """A failed retry cannot replace the complete publication made by the upgrade."""
+    generated_at = "2026-09-27T12:00:00Z"
+    monkeypatch.setattr(main, "_now", lambda: generated_at)
+    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-01T00:00:00Z")
+    _list(monkeypatch, {"ci": ([_workflow("wf-new", "new-build-abcde")], True)})
+    upgraded = _MemoryS3(
+        {
+            "argo/data/runs.parquet": parquet_io.table_to_parquet_bytes(
+                _generationless_runs_fixture(), parquet_io.RUNS_SCHEMA
+            )
+        }
+    )
+    assert main._run_cycle(_config([Cluster(name="ci")]), upgraded) is True
+
+    before = dict(upgraded.objects)
+    failing = _FailNthPut(before, fail_on_put=1)
+    monkeypatch.setattr(main, "_now", lambda: "2026-09-27T12:01:00Z")
+    with pytest.raises(ClientError):
+        main._run_cycle(_config([Cluster(name="ci")]), failing)
+
+    assert failing.objects == before
+    assert failing.puts == 1
+    previous_meta = json.loads(before["argo/data/meta.json"])
+    assert _paired(
+        previous_meta,
+        before["argo/data/workflows.parquet"],
+        before["argo/data/runs.parquet"],
+    )
+
+
 def test_cycle_upgrades_a_legacy_runs_fixture_and_publishes_current_schema(monkeypatch):
     """The first cycle after a schema release upgrades the stored ledger."""
     legacy_schema = pa.schema(

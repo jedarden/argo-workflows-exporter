@@ -62,6 +62,18 @@ it must not invent an id or treat the absence as matching any sidecar. This
 is stricter than the valid zero-row case, where the rows are empty but the
 footer still carries the generation id.
 
+The producer handles a footerless `runs.parquet` differently from a consumer:
+it treats the file as reusable ledger history. The read path conforms its rows
+to the current `RUNS_SCHEMA` without consulting the footer, so retained runs
+survive an exporter upgrade even though the old object cannot be presented as
+a current publication. The producer never carries an old or missing id
+forward. It creates one fresh id at cycle start and stamps that id into the
+new `workflows.parquet`, `runs.parquet`, and `meta.json` payloads. If listing,
+ledger folding, or encoding fails, the read/compute phase has issued no PUT and
+the existing objects remain untouched; if a later PUT fails, the old
+`meta.json` remains the commit marker and a pairing-aware consumer retains the
+previous complete publication until the next full retry succeeds.
+
 The id names a *publication*, not a content hash. Two consecutive cycles
 that observed identical rows publish different ids, and the rows themselves
 are unchanged; conversely a consumer must not interpret equality of two

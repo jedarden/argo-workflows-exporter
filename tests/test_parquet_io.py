@@ -214,6 +214,30 @@ def test_object_written_without_a_generation_reads_back_as_none():
     assert read_generation_id(table_to_parquet_bytes([], WORKFLOWS_SCHEMA)) is None
 
 
+def _generationless_runs_fixture():
+    return json.loads(
+        (Path(__file__).with_name("fixtures") / "runs_pre_generation_id.json").read_text(
+            encoding="utf-8"
+        )
+    )["rows"]
+
+
+def test_generationless_runs_fixture_is_reusable_and_gets_a_fresh_footer_id():
+    """A pre-generation ledger is valid input, but never a current output."""
+    stored = table_to_parquet_bytes(_generationless_runs_fixture(), RUNS_SCHEMA)
+
+    assert read_generation_id(stored) is None
+    table = parquet_bytes_to_table(stored, RUNS_SCHEMA)
+    assert {row["uid"] for row in table.to_pylist()} == {
+        "wf-legacy-reused",
+        "wf-legacy-retained",
+    }
+
+    generation_id = "2026-09-27T12:00:00Z-fresh12345678"
+    rewritten = table_to_parquet_bytes(table.to_pylist(), RUNS_SCHEMA, generation_id)
+    assert read_generation_id(rewritten) == generation_id
+
+
 def test_reading_a_stored_ledger_drops_its_old_generation_id():
     """conform() rebuilds the table on the current schema, so a generation id
     read back from storage cannot leak into the object the next cycle writes:

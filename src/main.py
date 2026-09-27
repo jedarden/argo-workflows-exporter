@@ -265,6 +265,10 @@ def _run_cycle(cfg: config.Config, s3) -> bool:
             return False
 
         runs_key = f"{cfg.dest_prefix}/runs.parquet"
+        # A ledger's generation_id is publication metadata, not row data. A
+        # footerless ledger from a pre-generation release is therefore still a
+        # valid history input; parquet_bytes_to_table normalizes its rows and
+        # this cycle stamps a fresh id on the new output below.
         stored = parquet_io.parquet_bytes_to_table(
             s3io.download_bytes(s3, cfg.dest.bucket, runs_key), parquet_io.RUNS_SCHEMA
         )

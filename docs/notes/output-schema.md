@@ -64,6 +64,14 @@ publication and retain the last complete generation. A missing key is not a
 wildcard and must not be replaced with a guessed id. This differs from a
 valid zero-row current snapshot, whose footer still carries its generation id.
 
+On the producer side, a footerless `runs.parquet` is valid historical input:
+the exporter reads and conforms its rows, then merges current observations.
+The old footer value is never reused (and there may be no value at all). The
+next successful cycle rewrites all three objects with one newly generated,
+matching id. A read or compute failure writes none of them, preserving the
+existing publication; a failed upload leaves the old sidecar as the commit
+marker until a later retry completes the new set.
+
 ## Reading the columns
 
 **`template` is null rather than guessed.** A workflow with a fully inline
