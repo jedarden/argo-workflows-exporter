@@ -19,6 +19,7 @@ from src.workflows import (
     failed_step,
     failure_class,
     normalize_failure,
+    normalize_timestamp,
     template_of,
     to_row,
     trigger_of,
@@ -316,6 +317,35 @@ def test_duration_is_none_while_running():
     assert duration_seconds("2026-08-11T03:31:31Z", "2026-08-11T03:32:33Z") == 62
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-09-23T08:00:00-04:00", "2026-09-23T12:00:00Z"),
+        ("2026-09-23T17:30:00+05:30", "2026-09-23T12:00:00Z"),
+        ("2026-09-23T08:00:00.250-04:00", "2026-09-23T12:00:00.250000Z"),
+        (None, None),
+        ("", None),
+        ("2026-09-23T08:00:00", None),
+        ("not-a-timestamp", None),
+        (123, None),
+    ],
+)
+def test_normalize_timestamp_emits_utc_rfc3339_or_null(value, expected):
+    assert normalize_timestamp(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("started_at", "finished_at"),
+    [
+        ("2026-09-23T12:00:00", "2026-09-23T12:01:00Z"),
+        ("not-a-timestamp", "2026-09-23T12:01:00Z"),
+        ("2026-09-23T12:00:00Z", "not-a-timestamp"),
+    ],
+)
+def test_duration_is_null_for_missing_or_invalid_timestamps(started_at, finished_at):
+    assert duration_seconds(started_at, finished_at) is None
+
+
 def test_failed_step_reports_the_earliest_failing_pod_not_its_parents():
     wf = _wf(
         status={
@@ -561,6 +591,62 @@ def test_duration_handles_fractional_and_offset_timestamps():
     assert duration_seconds(
         "2026-09-23T12:00:00.250Z", "2026-09-23T14:00:00.750+01:00"
     ) == 3600
+
+
+def test_to_row_normalizes_all_workflow_timestamps_to_utc():
+    wf = _wf(
+        metadata={
+            **_wf()["metadata"],
+            "creationTimestamp": "2026-09-23T08:00:00-04:00",
+        },
+        status={
+            "phase": "Succeeded",
+            "startedAt": "2026-09-23T17:30:00+05:30",
+            "finishedAt": "2026-09-23T12:01:03.250Z",
+        },
+    )
+
+    row = to_row(wf, "ci", "2026-09-23T13:00:00Z")
+
+    assert row["created_at"] == "2026-09-23T12:00:00Z"
+    assert row["started_at"] == "2026-09-23T12:00:00Z"
+    assert row["finished_at"] == "2026-09-23T12:01:03.250000Z"
+    assert row["duration_seconds"] == 63
+
+
+@pytest.mark.parametrize("field", ["creationTimestamp", "startedAt", "finishedAt"])
+def test_to_row_emits_null_for_invalid_workflow_timestamp(field):
+    wf = _wf(
+        metadata={**_wf()["metadata"]},
+        status={
+            "phase": "Succeeded",
+            "startedAt": "2026-09-23T12:00:00Z",
+            "finishedAt": "2026-09-23T12:01:03Z",
+        },
+    )
+    if field == "creationTimestamp":
+        wf["metadata"][field] = "not-a-timestamp"
+    else:
+        wf["status"][field] = "not-a-timestamp"
+
+    row = to_row(wf, "ci", "2026-09-23T13:00:00Z")
+
+    expected = {
+        "created_at": "2026-08-11T03:31:30Z",
+        "started_at": "2026-09-23T12:00:00Z",
+        "finished_at": "2026-09-23T12:01:03Z",
+        "duration_seconds": 63,
+    }
+    output_field = {
+        "creationTimestamp": "created_at",
+        "startedAt": "started_at",
+        "finishedAt": "finished_at",
+    }[field]
+    expected[output_field] = None
+    if output_field != "created_at":
+        expected["duration_seconds"] = None
+
+    assert {key: row[key] for key in expected} == expected
 
 
 def test_resource_counters_keep_zero_values_and_drop_extended_resources():

@@ -11,7 +11,7 @@ import hashlib
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -129,13 +129,29 @@ def _validate_workflow(wf, index=None):
 
 
 def _parse_ts(value):
-    if not value:
+    if not isinstance(value, str) or not value:
         return None
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         log.debug("unparseable timestamp: %r", value)
         return None
+
+
+def normalize_timestamp(value):
+    """Return a source timestamp as UTC RFC 3339, or None when unusable.
+
+    Kubernetes normally supplies RFC 3339 timestamps with a timezone. Treat a
+    missing, timezone-less, or malformed value as absent rather than allowing
+    it to leak into the output or break duration calculation.
+    """
+    parsed = _parse_ts(value)
+    if parsed is None or parsed.tzinfo is None:
+        if parsed is not None:
+            log.debug("timestamp has no timezone: %r", value)
+        return None
+    normalized = parsed.astimezone(timezone.utc).isoformat()
+    return normalized.replace("+00:00", "Z")
 
 
 def duration_seconds(started_at, finished_at):
@@ -145,9 +161,17 @@ def duration_seconds(started_at, finished_at):
     conflating the two would make a running workflow indistinguishable from a
     finished one in the same column."""
     start, finish = _parse_ts(started_at), _parse_ts(finished_at)
+    if start is not None and start.tzinfo is None:
+        start = None
+    if finish is not None and finish.tzinfo is None:
+        finish = None
     if start is None or finish is None:
         return None
-    return int((finish - start).total_seconds())
+    return int(
+        (
+            finish.astimezone(timezone.utc) - start.astimezone(timezone.utc)
+        ).total_seconds()
+    )
 
 
 def template_of(wf):
@@ -432,9 +456,9 @@ def to_row(wf, cluster_name: str, observed_at: str) -> dict:
         "phase": status.get("phase") or "Pending",
         "message": status.get("message"),
         "progress": status.get("progress"),
-        "created_at": meta.get("creationTimestamp"),
-        "started_at": status.get("startedAt"),
-        "finished_at": status.get("finishedAt"),
+        "created_at": normalize_timestamp(meta.get("creationTimestamp")),
+        "started_at": normalize_timestamp(status.get("startedAt")),
+        "finished_at": normalize_timestamp(status.get("finishedAt")),
         "duration_seconds": duration_seconds(status.get("startedAt"), status.get("finishedAt")),
         # Argo's own accumulated resource counters. Only cpu and memory are
         # kept as columns; an installation using extended resources (GPUs,

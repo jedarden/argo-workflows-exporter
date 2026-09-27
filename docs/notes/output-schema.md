@@ -18,9 +18,9 @@ of columns and differ only in their timestamp columns.
 | `phase` | string | never | `Pending`, `Running`, `Succeeded`, `Failed`, `Error`; an empty or absent source phase is normalized to `Pending` |
 | `message` | string | usually, on success | Argo's own summary of why a run ended as it did |
 | `progress` | string | not yet admitted | Argo's `N/M` completed-node counter, verbatim |
-| `created_at` | string | never | RFC 3339, UTC |
-| `started_at` | string | not yet admitted or never started | RFC 3339, UTC |
-| `finished_at` | string | still running | RFC 3339, UTC |
+| `created_at` | string | source missing or invalid | RFC 3339, UTC |
+| `started_at` | string | not yet admitted, never started, or source invalid | RFC 3339, UTC |
+| `finished_at` | string | still running or source invalid | RFC 3339, UTC |
 | `duration_seconds` | int64 | not yet started or still running | wall clock, `finished_at - started_at` when both timestamps exist |
 | `resources_duration_cpu` | int64 | not yet accumulated | see below |
 | `resources_duration_memory` | int64 | not yet accumulated | see below |
@@ -118,6 +118,12 @@ An `Error` workflow can be terminal without ever starting and can still carry
 `finishedAt`. For that shape the exporter emits `phase = "Error"`, preserves
 `finished_at`, emits `started_at = null`, and leaves `duration_seconds = null`:
 duration is only defined when both endpoints of the interval are present.
+
+**Timestamp normalization.** `created_at`, `started_at`, and `finished_at` are
+parsed from the source values, converted to UTC, and emitted with a literal
+`Z` suffix. A missing, timezone-less, non-string, or otherwise invalid source
+timestamp is emitted as null; it does not discard the Workflow row. The
+duration is null whenever either endpoint is missing or invalid.
 
 **`resources_duration_*` are Argo's own accumulated counters** (`cpu` and
 `memory` from `status.resourcesDuration`). They are useful as relative cost
