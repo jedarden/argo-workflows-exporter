@@ -40,9 +40,7 @@
       "name": "example-build-abcde",
       "namespace": "argo",
       "creationTimestamp": "2026-09-23T12:00:00Z",
-      "labels": {
-        "workflows.argoproj.io/workflow-template": "stale-label"
-      }
+      "labels": {}
     },
     "spec": {
       "workflowTemplateRef": {
@@ -62,10 +60,7 @@
       "name": "shared-build-abcde",
       "namespace": "argo",
       "creationTimestamp": "2026-09-23T12:00:00Z",
-      "labels": {
-        "workflows.argoproj.io/workflow-template": "stale-namespaced-label",
-        "workflows.argoproj.io/cluster-workflow-template": "shared"
-      }
+      "labels": {}
     },
     "spec": {
       "workflowTemplateRef": {
@@ -73,6 +68,62 @@
         "clusterScope": true
       }
     },
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
+  "label_only_template": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-label-only-template",
+      "name": "label-only-build-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {
+        "workflows.argoproj.io/workflow-template": "label-only-build"
+      }
+    },
+    "spec": {},
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
+  "ref_and_label_template": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-ref-and-label-template",
+      "name": "preferred-build-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {
+        "workflows.argoproj.io/workflow-template": "stale-label"
+      }
+    },
+    "spec": {
+      "workflowTemplateRef": {
+        "name": "preferred-build"
+      }
+    },
+    "status": {
+      "phase": "Running",
+      "progress": "0/1"
+    }
+  },
+  "no_template": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-no-template",
+      "name": "inline-build-without-template-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
     "status": {
       "phase": "Running",
       "progress": "0/1"

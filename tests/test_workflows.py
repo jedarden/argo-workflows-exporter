@@ -312,21 +312,37 @@ def test_explicitly_empty_phase_values_are_normalized_to_pending(status):
     assert row["phase"] == "Pending"
 
 
-def test_namespaced_template_fixture_prefers_the_spec_reference():
-    row = to_row(_fixture("namespaced_template"), "ci", "2026-09-23T13:00:00Z")
-    assert row["template"] == "example-build"
-    assert row["template_scope"] == "namespaced"
-
-
-def test_cluster_template_fixture_propagates_cluster_scope():
-    row = to_row(_fixture("cluster_template"), "ci", "2026-09-23T13:00:00Z")
-    assert row["template"] == "shared"
-    assert row["template_scope"] == "cluster"
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_template", "expected_scope"),
+    [
+        ("namespaced_template", "example-build", "namespaced"),
+        ("cluster_template", "shared", "cluster"),
+        ("label_only_template", "label-only-build", "namespaced"),
+        ("ref_and_label_template", "preferred-build", "namespaced"),
+        ("no_template", None, None),
+    ],
+)
+def test_template_fixtures_populate_shared_columns(
+    fixture_name, expected_template, expected_scope
+):
+    row = to_row(_fixture(fixture_name), "ci", "2026-09-23T13:00:00Z")
+    assert row["template"] == expected_template
+    assert row["template_scope"] == expected_scope
 
 
 def test_cluster_template_label_wins_over_namespaced_label():
     wf = _fixture("cluster_template")
-    wf = {**wf, "spec": {}}
+    wf = {
+        **wf,
+        "metadata": {
+            **wf["metadata"],
+            "labels": {
+                "workflows.argoproj.io/workflow-template": "stale-namespaced-label",
+                "workflows.argoproj.io/cluster-workflow-template": "shared",
+            },
+        },
+        "spec": {},
+    }
     assert template_of(wf) == ("shared", "cluster")
 
 
