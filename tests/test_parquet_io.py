@@ -165,16 +165,30 @@ def test_ledger_roundtrip_preserves_values_types_and_nulls():
     assert table.to_pylist() == rows
 
 
-def test_failure_columns_survive_a_ledger_roundtrip():
-    """The taxonomy is written as opaque strings and reads back unchanged."""
+@pytest.mark.parametrize(
+    ("schema", "tail"),
+    [
+        (WORKFLOWS_SCHEMA, {"observed_at": "2026-08-11T04:00:00Z"}),
+        (
+            RUNS_SCHEMA,
+            {
+                "first_seen_at": "2026-08-11T03:00:00Z",
+                "last_seen_at": "2026-08-11T04:00:00Z",
+            },
+        ),
+    ],
+    ids=["workflows", "runs"],
+)
+def test_failure_columns_survive_a_roundtrip_in_both_outputs(schema, tail):
+    """The shared taxonomy is written and read unchanged in each output."""
     rows = [{
         "uid": "uid-1", "cluster": "ci", "namespace": "argo", "name": "build-abcde",
         "phase": "Failed", "message": "failed step 'test'",
         "failed_step": "test", "failed_step_message": "error[E0432]: unresolved import",
         "failure_fingerprint": "8f49197fbc86", "failure_class": "build",
-        "first_seen_at": "2026-08-11T03:00:00Z", "last_seen_at": "2026-08-11T04:00:00Z",
+        **tail,
     }]
-    table = pq.read_table(io.BytesIO(table_to_parquet_bytes(rows, RUNS_SCHEMA)))
+    table = parquet_bytes_to_table(table_to_parquet_bytes(rows, schema), schema)
     [row] = table.to_pylist()
     for key, value in rows[0].items():
         assert row[key] == value, key

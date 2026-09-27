@@ -321,6 +321,22 @@ def failure_class(message):
     return _FAILURE_CLASS_UNKNOWN
 
 
+def failure_columns(step_message, workflow_message):
+    """Return the shared failure columns for one workflow observation.
+
+    A failed pod's message is more specific than Argo's workflow-level
+    message, but compressed node trees and workflow-level failures have only
+    the latter. Keeping the fallback and both null cases in one function makes
+    the values copied to the snapshot and ledger rows impossible to diverge.
+    """
+    message = step_message or workflow_message
+    _, fingerprint = normalize_failure(message)
+    return {
+        "failure_fingerprint": fingerprint,
+        "failure_class": failure_class(message),
+    }
+
+
 def to_row(wf, cluster_name: str, observed_at: str) -> dict:
     _validate_workflow(wf)
     meta = wf.get("metadata") or {}
@@ -334,8 +350,7 @@ def to_row(wf, cluster_name: str, observed_at: str) -> dict:
     # message names the actual breakage ("exit code 137"); the workflow
     # message only names the step ("failed step 'build'"). When neither exists
     # the run did not fail, and both derived columns stay null.
-    failure_message = step_message or status.get("message")
-    _, fingerprint = normalize_failure(failure_message)
+    taxonomy = failure_columns(step_message, status.get("message"))
 
     return {
         "uid": meta.get("uid", ""),
@@ -362,8 +377,7 @@ def to_row(wf, cluster_name: str, observed_at: str) -> dict:
         "resources_duration_memory": resources.get("memory"),
         "failed_step": step_name,
         "failed_step_message": step_message,
-        "failure_fingerprint": fingerprint,
-        "failure_class": failure_class(failure_message),
+        **taxonomy,
         "observed_at": observed_at,
     }
 

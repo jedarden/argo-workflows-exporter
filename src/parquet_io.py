@@ -5,7 +5,7 @@ import pyarrow.parquet as pq
 
 # Columns shared by both outputs. The snapshot adds `observed_at`; the run
 # ledger adds `first_seen_at` / `last_seen_at` instead.
-_WORKFLOW_FIELDS = [
+_SHARED_FIELDS = [
     ("uid", pa.string()),
     ("cluster", pa.string()),
     ("namespace", pa.string()),
@@ -25,17 +25,16 @@ _WORKFLOW_FIELDS = [
     ("resources_duration_memory", pa.int64()),
     ("failed_step", pa.string()),
     ("failed_step_message", pa.string()),
-    # Phase 3a: the failure message reduced to something groupable. Both are
-    # derived from `failed_step_message` (falling back to `message`), which is
-    # kept unchanged alongside them.
+    # Failure taxonomy is part of the shared contract: snapshots and the
+    # ledger must expose the same derived values for an observed workflow.
     ("failure_fingerprint", pa.string()),
     ("failure_class", pa.string()),
 ]
 
-WORKFLOWS_SCHEMA = pa.schema(_WORKFLOW_FIELDS + [("observed_at", pa.string())])
+WORKFLOWS_SCHEMA = pa.schema(_SHARED_FIELDS + [("observed_at", pa.string())])
 
 RUNS_SCHEMA = pa.schema(
-    _WORKFLOW_FIELDS + [("first_seen_at", pa.string()), ("last_seen_at", pa.string())]
+    _SHARED_FIELDS + [("first_seen_at", pa.string()), ("last_seen_at", pa.string())]
 )
 
 
