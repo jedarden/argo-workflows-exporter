@@ -77,12 +77,13 @@ def conform(table: pa.Table, schema: pa.Schema) -> pa.Table:
     """Re-shape a table read back from storage to `schema`, filling columns it
     does not have with nulls and dropping ones the schema no longer declares.
 
-    This is what makes a schema change survivable. The run ledger is read back
-    and rewritten every cycle, so without this the first cycle after a release
-    that adds a column would fail to concatenate old rows with new ones — and
-    because the cycle is retried on the same stale object every interval, it
-    would not recover on its own. Losing a column's history is acceptable;
-    a crash-loop that also stops collecting is not.
+    This is what makes a schema change survivable. Stored rows from either
+    output may be combined with rows from a newer release: without this, the
+    first cycle after a release that adds a column would fail to concatenate
+    old rows with new ones — and because the cycle is retried on the same stale
+    object every interval, it would not recover on its own. Losing a newly
+    added column's history is acceptable; a crash-loop that also stops
+    collecting is not.
     """
     columns = []
     for field in schema:

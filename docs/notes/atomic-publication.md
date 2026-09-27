@@ -35,6 +35,15 @@ All three objects of a cycle carry the same id:
   other client), not the whole object.
 - `meta.json` — as a top-level `"generation_id"` field.
 
+Objects from the release before generation identity was introduced are a
+documented compatibility case: their Parquet footers have no `generation_id`
+key. A consumer may still decode those rows for an explicit historical
+migration, but it cannot treat them as a complete current publication. The
+footer check returns no id and the consumer holds its last paired generation;
+it must not invent an id or treat the absence as matching any sidecar. This
+is stricter than the valid zero-row case, where the rows are empty but the
+footer still carries the generation id.
+
 The id names a *publication*, not a content hash. Two consecutive cycles
 that observed identical rows publish different ids, and the rows themselves
 are unchanged; conversely a consumer must not interpret equality of two

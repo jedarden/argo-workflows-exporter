@@ -32,6 +32,38 @@ of columns and differ only in their timestamp columns.
 `workflows.parquet` adds `observed_at` — the timestamp of the cycle that saw
 it. `runs.parquet` adds `first_seen_at` and `last_seen_at` instead.
 
+## Schema evolution
+
+The two Parquet schemas are versioned by the exporter release, but a stored
+object is not migrated in place. `src/parquet_io.py` is the compatibility
+boundary: every object read for reuse or combination is conformed to the
+current target schema by column name before its rows are interpreted. That
+operation:
+
+- fills a newly added nullable column with typed nulls when an older file does
+  not have it;
+- drops columns no longer in the current contract; and
+- restores the current column order and declared types.
+
+Consumers concatenating or diffing generations must apply the same
+normalization to each generation before combining them. They must not ask
+Parquet to concatenate the raw schemas from different exporter releases. The
+contract is additive in place: new fields are nullable, and an existing
+field's name and type do not change without a separately versioned migration.
+For example, a `workflows.parquet` snapshot written before the failure
+taxonomy has null `failure_fingerprint` and `failure_class` after
+normalization, while a newer snapshot keeps its derived values; both then
+share `WORKFLOWS_SCHEMA` and can be compared or concatenated safely. The
+same rule applies to `runs.parquet`.
+
+Schema conformance is independent of generation pairing. `generation_id` is
+file metadata, not a row or schema column. Parquet objects written before
+generation identity existed have no `generation_id` footer key; a footer read
+returns no id, and the consumer must reject that object set as an incomplete
+publication and retain the last complete generation. A missing key is not a
+wildcard and must not be replaced with a guessed id. This differs from a
+valid zero-row current snapshot, whose footer still carries its generation id.
+
 ## Reading the columns
 
 **`template` is null rather than guessed.** A workflow with a fully inline
@@ -282,10 +314,11 @@ outputs themselves.
    `meta.json`'s `generation_id` with the `generation_id` in each Parquet
    file's file-level metadata (the Parquet footer alone —
    `pyarrow.parquet.read_schema`, not a full object read). All three must be
-   equal. A mismatch means one upload failed partway and the stored objects
-   belong to two different cycles: hold the previously paired generation and
-   retry later rather than presenting two cycles as one. The check works for
-   empty snapshots too — the id is in the file metadata, not the rows.
+   equal. A mismatch or a missing footer key means one object is legacy,
+   missing, or was uploaded from a different cycle: hold the previously paired
+   generation and retry later rather than presenting an incomplete or mixed
+   set. The check works for empty snapshots too — a valid id is in the file
+   metadata, not the rows.
 4. For fresh, paired metadata, use rows only for clusters with `ok == true`.
    Treat an `ok == false` cluster as unavailable, not empty: absence from that
    cluster does not indicate deletion. A non-empty snapshot's rows must also

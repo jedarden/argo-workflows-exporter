@@ -168,5 +168,40 @@
       "run_uids": ["wf-stale"],
       "unavailable_clusters": []
     }
+  },
+  "pre_generation_id": {
+    "description": "Parquet objects written before generation identity have no footer key and cannot be paired as a current publication.",
+    "meta": {
+      "version": "fixture",
+      "generated_at": "2026-09-27T11:55:00Z",
+      "generation_id": "2026-09-27T11:55:00Z-666666ffffff",
+      "poll_interval_seconds": 300,
+      "run_retention_days": 7,
+      "clusters": [
+        {"name": "ci", "ok": true, "workflows": 1}
+      ],
+      "workflows": 1,
+      "runs": 1
+    },
+    "workflows": {
+      "generation_id": null,
+      "rows": [
+        {"uid": "wf-legacy", "cluster": "ci", "phase": "Succeeded", "observed_at": "2026-09-27T11:55:00Z"}
+      ]
+    },
+    "runs": {
+      "generation_id": null,
+      "rows": [
+        {"uid": "wf-legacy", "cluster": "ci", "phase": "Succeeded", "first_seen_at": "2026-09-27T11:54:00Z", "last_seen_at": "2026-09-27T11:55:00Z"}
+      ]
+    },
+    "fallback": "complete",
+    "expected": {
+      "accepted": false,
+      "selected": "complete",
+      "workflow_uids": ["wf-complete"],
+      "run_uids": ["wf-complete"],
+      "unavailable_clusters": []
+    }
   }
 }

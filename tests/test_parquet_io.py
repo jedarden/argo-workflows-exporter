@@ -244,6 +244,19 @@ def _legacy_runs_fixture():
     )["rows"]
 
 
+_PRE_TAXONOMY_WORKFLOWS_SCHEMA = pa.schema(
+    [f for f in WORKFLOWS_SCHEMA if f.name not in ("failure_fingerprint", "failure_class")]
+)
+
+
+def _legacy_workflows_fixture():
+    return json.loads(
+        (Path(__file__).with_name("fixtures") / "workflows_pre_taxonomy.json").read_text(
+            encoding="utf-8"
+        )
+    )["rows"]
+
+
 def test_a_ledger_file_from_before_the_failure_taxonomy_reads_back_current():
     """The stored object must survive an upgrade on the first cycle that reads
     it — exercised through parquet_bytes_to_table, the path a cycle actually
@@ -289,6 +302,59 @@ def test_a_stored_legacy_fixture_is_republished_with_the_current_schema():
     assert rows["wf-preserved"]["last_seen_at"] == "2026-09-24T11:01:05Z"
     assert rows["wf-preserved"]["failure_fingerprint"] is None
     assert rows["wf-preserved"]["failure_class"] is None
+
+
+def test_a_snapshot_file_from_before_the_failure_taxonomy_reads_back_current():
+    """The current snapshot schema must conform an old stored snapshot too."""
+    stored = table_to_parquet_bytes(
+        _legacy_workflows_fixture(), _PRE_TAXONOMY_WORKFLOWS_SCHEMA
+    )
+
+    table = parquet_bytes_to_table(stored, WORKFLOWS_SCHEMA)
+
+    assert table.schema == WORKFLOWS_SCHEMA
+    rows = {row["uid"]: row for row in table.to_pylist()}
+    assert set(rows) == {"wf-reobserved", "wf-preserved"}
+    assert rows["wf-reobserved"]["observed_at"] == "2026-09-25T10:05:00Z"
+    assert rows["wf-preserved"]["phase"] == "Succeeded"
+    assert rows["wf-preserved"]["failure_fingerprint"] is None
+    assert rows["wf-preserved"]["failure_class"] is None
+
+
+def test_old_and_new_snapshot_generations_can_be_concatenated_and_diffed():
+    """Normalize each generation before a consumer combines or compares it."""
+    old = parquet_bytes_to_table(
+        table_to_parquet_bytes(_legacy_workflows_fixture(), _PRE_TAXONOMY_WORKFLOWS_SCHEMA),
+        WORKFLOWS_SCHEMA,
+    )
+    current_rows = [
+        {
+            **_legacy_workflows_fixture()[0],
+            "phase": "Failed",
+            "message": "failed step 'test'",
+            "failed_step": "test",
+            "failed_step_message": "error[E0432]: unresolved import",
+            "failure_fingerprint": "8f49197fbc86",
+            "failure_class": "build",
+            "observed_at": "2026-09-26T10:05:00Z",
+        }
+    ]
+    current = parquet_bytes_to_table(
+        table_to_parquet_bytes(current_rows, WORKFLOWS_SCHEMA), WORKFLOWS_SCHEMA
+    )
+
+    combined = pa.concat_tables([old, current])
+    assert combined.schema == WORKFLOWS_SCHEMA
+    rows = combined.to_pylist()
+    assert rows[0]["uid"] == "wf-reobserved"
+    assert rows[0]["failure_class"] is None
+    assert rows[-1]["failure_class"] == "build"
+
+    by_generation = {
+        row["observed_at"]: row for row in rows if row["uid"] == "wf-reobserved"
+    }
+    assert by_generation["2026-09-25T10:05:00Z"]["phase"] == "Running"
+    assert by_generation["2026-09-26T10:05:00Z"]["phase"] == "Failed"
 
 
 def test_a_stored_column_the_schema_dropped_is_dropped_and_its_neighbors_survive():

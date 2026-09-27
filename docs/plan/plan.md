@@ -46,7 +46,7 @@ private network path resolves from the pod. Nothing else is dialed.
 | `k8s_api.py` | One uniform `GET` across local and proxied clusters; paginated listing that reports whether it completed. |
 | `workflows.py` | Turn raw `Workflow` objects into flat rows: template, trigger, phase, duration, failing step. |
 | `ledger.py` | Fold each cycle's observations into the durable run record; expire by last-seen. |
-| `parquet_io.py` | Schemas, Parquet encode/decode, and schema conformance for records written by an older release. |
+| `parquet_io.py` | Schemas, Parquet encode/decode, and schema conformance for records written by an older release in either output. |
 | `s3io.py` | Client construction, get/put. |
 | `main.py` | Poll loop, cycle orchestration, health endpoint, signal handling. |
 

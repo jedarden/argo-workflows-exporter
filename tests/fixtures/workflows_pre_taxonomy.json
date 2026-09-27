@@ -1,0 +1,48 @@
+{
+  "rows": [
+    {
+      "uid": "wf-reobserved",
+      "cluster": "ci",
+      "namespace": "argo",
+      "name": "legacy-build-abcde",
+      "template": "legacy-build",
+      "template_scope": "namespaced",
+      "trigger_kind": "event",
+      "trigger_name": "push",
+      "phase": "Running",
+      "message": null,
+      "progress": "1/2",
+      "created_at": "2026-09-25T10:00:00Z",
+      "started_at": "2026-09-25T10:00:01Z",
+      "finished_at": null,
+      "duration_seconds": null,
+      "resources_duration_cpu": null,
+      "resources_duration_memory": null,
+      "failed_step": null,
+      "failed_step_message": null,
+      "observed_at": "2026-09-25T10:05:00Z"
+    },
+    {
+      "uid": "wf-preserved",
+      "cluster": "ci",
+      "namespace": "argo",
+      "name": "legacy-test-abcde",
+      "template": "legacy-test",
+      "template_scope": "namespaced",
+      "trigger_kind": "cron",
+      "trigger_name": "nightly",
+      "phase": "Succeeded",
+      "message": null,
+      "progress": "2/2",
+      "created_at": "2026-09-24T11:00:00Z",
+      "started_at": "2026-09-24T11:00:01Z",
+      "finished_at": "2026-09-24T11:01:02Z",
+      "duration_seconds": 61,
+      "resources_duration_cpu": 30,
+      "resources_duration_memory": 500,
+      "failed_step": null,
+      "failed_step_message": null,
+      "observed_at": "2026-09-25T10:05:00Z"
+    }
+  ]
+}

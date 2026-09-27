@@ -47,7 +47,8 @@ def fixtures():
 
 
 @pytest.mark.parametrize(
-    "case_name", ["complete", "torn", "zero_row", "failed_clusters", "stale"]
+    "case_name",
+    ["complete", "torn", "zero_row", "failed_clusters", "stale", "pre_generation_id"],
 )
 def test_fixture_sidecars_and_both_parquet_footers_are_executable(fixtures, case_name):
     case = fixtures[case_name]
@@ -58,6 +59,18 @@ def test_fixture_sidecars_and_both_parquet_footers_are_executable(fixtures, case
     assert ids["workflows"] == case["workflows"]["generation_id"]
     assert ids["runs"] == case["runs"]["generation_id"]
     assert consumer.is_complete_generation(publication) is case["expected"]["accepted"]
+
+
+def test_pre_generation_id_fixture_retains_the_last_complete_generation(fixtures):
+    previous = _materialize(fixtures["complete"])
+    legacy = _materialize(fixtures["pre_generation_id"])
+
+    assert consumer.generation_ids(legacy) == {
+        "meta": "2026-09-27T11:55:00Z-666666ffffff",
+        "workflows": None,
+        "runs": None,
+    }
+    assert consumer.select_generation(legacy, previous) is previous
 
 
 def test_torn_fixture_retains_the_last_complete_generation(fixtures):
