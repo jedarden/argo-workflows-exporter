@@ -713,6 +713,54 @@ def test_read_generation_reads_meta_first_and_returns_a_zero_row_generation(
     ).num_rows == 0
 
 
+@pytest.mark.parametrize("marker_state", ["missing", "invalid", "stale", "valid"])
+def test_read_generation_never_downloads_parquet_before_a_valid_marker(
+    fixtures, monkeypatch, marker_state
+):
+    current = _materialize(fixtures["complete"])
+    stale = _materialize(fixtures["stale"])
+    previous = _materialize(fixtures["complete"])
+    objects = _stored_objects(current)
+
+    if marker_state == "missing":
+        objects.pop("argo/data/meta.json")
+    elif marker_state == "invalid":
+        objects["argo/data/meta.json"] = b"not-json"
+    elif marker_state == "stale":
+        objects = _stored_objects(stale)
+
+    calls = []
+
+    def download(_s3, _bucket, key):
+        calls.append(key)
+        if marker_state != "valid":
+            assert key == "argo/data/meta.json"
+        return objects.get(key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+
+    selected = consumer.read_generation(
+        object(),
+        "bucket",
+        "argo/data",
+        previous,
+        max_cycle_seconds=_C_MAX_SECONDS,
+        now=datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc),
+    )
+
+    if marker_state == "valid":
+        assert selected is not previous
+        assert selected.meta["generation_id"] == current.meta["generation_id"]
+        assert calls == [
+            "argo/data/meta.json",
+            "argo/data/workflows.parquet",
+            "argo/data/runs.parquet",
+        ]
+    else:
+        assert selected is previous
+        assert calls == ["argo/data/meta.json"]
+
+
 @pytest.mark.parametrize("missing", ["meta.json", "workflows.parquet", "runs.parquet"])
 def test_read_generation_retains_the_last_complete_generation_when_an_object_is_missing(
     fixtures, monkeypatch, missing
