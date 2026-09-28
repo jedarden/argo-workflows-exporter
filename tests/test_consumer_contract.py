@@ -10,6 +10,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from botocore.exceptions import ClientError
 import pyarrow as pa
 import pytest
 
@@ -740,6 +741,88 @@ def test_read_generation_retains_the_last_complete_generation_when_an_object_is_
             "argo/data/workflows.parquet",
             "argo/data/runs.parquet",
         ]
+
+
+@pytest.mark.parametrize(
+    "object_name", ["meta.json", "workflows.parquet", "runs.parquet"]
+)
+@pytest.mark.parametrize(
+    "retain_previous",
+    [pytest.param(False, id="bootstrap"), pytest.param(True, id="last-complete")],
+)
+def test_read_generation_treats_each_missing_object_as_an_incomplete_publication(
+    fixtures, monkeypatch, object_name, retain_previous
+):
+    candidate = _materialize(fixtures["complete"])
+    previous = _materialize(fixtures["complete"]) if retain_previous else None
+    objects = _stored_objects(candidate)
+    objects.pop(f"argo/data/{object_name}")
+    calls = []
+
+    def download(_s3, _bucket, key):
+        calls.append(key)
+        return objects.get(key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+
+    selected = consumer.read_generation(object(), "bucket", "argo/data", previous)
+
+    assert selected is previous
+    assert calls == (
+        ["argo/data/meta.json"]
+        if object_name == "meta.json"
+        else [
+            "argo/data/meta.json",
+            "argo/data/workflows.parquet",
+            "argo/data/runs.parquet",
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "object_name", ["meta.json", "workflows.parquet", "runs.parquet"]
+)
+@pytest.mark.parametrize(
+    "retain_previous",
+    [pytest.param(False, id="bootstrap"), pytest.param(True, id="last-complete")],
+)
+@pytest.mark.parametrize(
+    "error_code", [pytest.param("AccessDenied"), pytest.param("InternalError")]
+)
+def test_read_generation_propagates_non_missing_s3_errors_from_every_object(
+    fixtures, monkeypatch, object_name, retain_previous, error_code
+):
+    candidate = _materialize(fixtures["complete"])
+    previous = _materialize(fixtures["complete"]) if retain_previous else None
+    objects = _stored_objects(candidate)
+    failing_key = f"argo/data/{object_name}"
+    error = ClientError(
+        {"Error": {"Code": error_code, "Message": "injected storage failure"}},
+        "GetObject",
+    )
+    calls = []
+
+    def download(_s3, _bucket, key):
+        calls.append(key)
+        if key == failing_key:
+            raise error
+        return objects[key]
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+
+    with pytest.raises(ClientError) as raised:
+        consumer.read_generation(object(), "bucket", "argo/data", previous)
+
+    assert raised.value is error
+    assert calls == (
+        ["argo/data/meta.json"]
+        if object_name == "meta.json"
+        else [
+            "argo/data/meta.json",
+            "argo/data/workflows.parquet",
+            *(["argo/data/runs.parquet"] if object_name == "runs.parquet" else []),
+        ]
+    )
 
 
 def test_read_generation_retains_the_last_complete_generation_for_a_torn_publication(
