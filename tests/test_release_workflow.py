@@ -119,6 +119,29 @@ def _run_resolve_version(
     return output_path.read_text(encoding="utf-8").strip()
 
 
+def _sensor_accepts_push(sensor: dict, *, author_name: str) -> bool:
+    """Apply the fixture's push filters to the small event shape they use."""
+    event = {
+        "headers": {"X-Github-Event": "push"},
+        "body": {
+            "ref": "refs/heads/main",
+            "head_commit": {"author": {"name": author_name}},
+        },
+    }
+    dependency = sensor["spec"]["dependencies"][0]
+    for data_filter in dependency["filters"]["data"]:
+        observed = event
+        for path_part in data_filter["path"].split("."):
+            observed = observed[path_part]
+        expected = data_filter["value"]
+        if data_filter.get("comparator") == "!=":
+            if observed in expected:
+                return False
+        elif observed not in expected:
+            return False
+    return True
+
+
 def test_release_workflow_runs_tests_before_resolving_and_building():
     workflow = _workflow()
     templates = _templates(workflow)
@@ -187,6 +210,63 @@ def test_resolver_honors_explicit_versions_and_pushes_patch_bumps(
             "--format=%an",
             "main",
         ) == "Argo Workflows CI"
+
+
+@pytest.mark.parametrize(
+    "explicit_version_change",
+    [False, True],
+    ids=["source-without-version-change", "source-with-explicit-version-change"],
+)
+def test_ci_version_writeback_does_not_start_a_second_build(
+    tmp_path: Path, explicit_version_change: bool
+):
+    """A release source push produces one sensor-accepted build in either mode."""
+    origin = _application_origin(
+        tmp_path, explicit_version_change=explicit_version_change
+    )
+    sensor = _sensor()
+    source_revision = _git(tmp_path, "--git-dir", str(origin), "rev-parse", "main")
+    source_author = _git(
+        tmp_path,
+        "--git-dir",
+        str(origin),
+        "show",
+        "-s",
+        "--format=%an",
+        "main",
+    )
+
+    assert _sensor_accepts_push(sensor, author_name=source_author)
+    assert not _sensor_accepts_push(sensor, author_name="Argo Workflows CI")
+
+    _run_resolve_version(
+        _workflow(), tmp_path, origin, tmp_path / "resolved-version"
+    )
+
+    latest_revision = _git(tmp_path, "--git-dir", str(origin), "rev-parse", "main")
+    latest_author = _git(
+        tmp_path,
+        "--git-dir",
+        str(origin),
+        "show",
+        "-s",
+        "--format=%an",
+        "main",
+    )
+    if explicit_version_change:
+        assert latest_revision == source_revision
+        push_authors = [source_author]
+    else:
+        assert latest_revision != source_revision
+        assert latest_author == "Argo Workflows CI"
+        push_authors = [source_author, latest_author]
+
+    accepted_build_authors = [
+        author
+        for author in push_authors
+        if _sensor_accepts_push(sensor, author_name=author)
+    ]
+    assert accepted_build_authors == [source_author]
 
 
 def test_ci_writeback_author_is_excluded_from_the_build_sensor():
