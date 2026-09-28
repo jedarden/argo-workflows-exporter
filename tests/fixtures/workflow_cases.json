@@ -714,5 +714,41 @@
         }
       }
     }
+  },
+  "reference_only_status_fields": {
+    "apiVersion": "argoproj.io/v1alpha1",
+    "kind": "Workflow",
+    "metadata": {
+      "uid": "uid-reference-only-status-fields",
+      "name": "reference-only-status-fields-abcde",
+      "namespace": "argo",
+      "creationTimestamp": "2026-09-23T12:00:00Z",
+      "labels": {}
+    },
+    "spec": {},
+    "status": {
+      "phase": "Running",
+      "progress": "1/3",
+      "estimatedDuration": 3600,
+      "conditions": [
+        {
+          "type": "PodRunning",
+          "status": "True",
+          "message": "the pod is running"
+        },
+        {
+          "type": "Completed",
+          "status": "False"
+        }
+      ],
+      "storedTemplates": {
+        "main": {
+          "name": "main",
+          "container": {
+            "image": "example/build:9.9"
+          }
+        }
+      }
+    }
   }
 }

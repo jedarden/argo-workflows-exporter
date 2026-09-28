@@ -601,6 +601,26 @@ def test_running_workflow_fixture_has_no_finished_timestamp_or_duration():
     assert row["duration_seconds"] is None
 
 
+def test_reference_only_status_fields_do_not_change_the_exported_schema():
+    wf = _fixture("reference_only_status_fields")
+    ignored = {"estimatedDuration", "conditions", "storedTemplates"}
+    without_reference_fields = {
+        **wf,
+        "status": {
+            field: value for field, value in wf["status"].items() if field not in ignored
+        },
+    }
+
+    row = to_row(wf, "ci", "2026-09-23T13:00:00Z")
+    baseline = to_row(without_reference_fields, "ci", "2026-09-23T13:00:00Z")
+
+    assert row == baseline
+    assert list(row) == WORKFLOWS_SCHEMA.names
+    assert parquet_bytes_to_table(
+        table_to_parquet_bytes([row], WORKFLOWS_SCHEMA), WORKFLOWS_SCHEMA
+    ).schema == WORKFLOWS_SCHEMA
+
+
 def test_duration_handles_fractional_and_offset_timestamps():
     assert duration_seconds(
         "2026-09-23T12:00:00.250Z", "2026-09-23T14:00:00.750+01:00"

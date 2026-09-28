@@ -1,9 +1,11 @@
-# Argo `Workflow` object — fields this exporter reads
+# Argo `Workflow` object — fields relevant to the exporter contract
 
 Reference notes on the upstream object shape, gathered from the Argo
 Workflows API and confirmed against a live installation (Argo Workflows v3.x,
 64 objects across templated, event-triggered, cron-triggered and inline
-workflows).
+workflows). The status table includes both fields the exporter reads and
+upstream fields retained here for reference but intentionally excluded from
+the output contract.
 
 ## Identity and provenance
 
@@ -48,11 +50,11 @@ not a usable path to the parent.
 | `status.progress` | `"N/M"` completed nodes |
 | `status.startedAt` / `finishedAt` | RFC 3339; `finishedAt` is absent while running, but a never-started terminal `Error` can have `finishedAt` without `startedAt` |
 | `status.resourcesDuration` | `{"cpu": int, "memory": int}`, accumulated over the run; other resource keys appear for extended resources |
-| `status.estimatedDuration` | absent on all 64 objects — populated only when Argo has a comparable prior run |
+| `status.estimatedDuration` | **Reference-only; intentionally ignored.** Absent on all 64 objects — populated only when Argo has a comparable prior run; the exporter does not read or emit it |
 | `status.nodes` | map of node name to node; up to 8 entries in the sample |
 | `status.compressedNodes` | replaces `status.nodes` on very large workflows (gzip + base64 of the node map) |
-| `status.conditions` | e.g. `PodRunning`, `Completed` |
-| `status.storedTemplates` | the full resolved template body, inlined into the object — the single largest contributor to object size, and not worth collecting |
+| `status.conditions` | **Intentionally ignored.** Condition records such as `PodRunning` and `Completed` are not read or emitted; no output column represents them |
+| `status.storedTemplates` | **Intentionally ignored.** The full resolved template body is inlined into the object and can be its largest contributor to size; the exporter does not collect or emit it |
 
 ### Nodes
 
