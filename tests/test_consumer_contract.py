@@ -779,6 +779,52 @@ def test_read_generation_treats_each_missing_object_as_an_incomplete_publication
     )
 
 
+@pytest.mark.parametrize("missing", ["workflows.parquet", "runs.parquet"])
+@pytest.mark.parametrize(
+    "retain_previous",
+    [pytest.param(False, id="bootstrap"), pytest.param(True, id="last-complete")],
+)
+def test_read_generation_rejects_missing_parquet_without_empty_or_mixed_data(
+    fixtures, monkeypatch, missing, retain_previous
+):
+    previous = _materialize(fixtures["complete"])
+    candidate = _materialize(fixtures["recovered_cluster"])
+    objects = _stored_objects(candidate)
+    objects.pop(f"argo/data/{missing}")
+    calls = []
+
+    def download(_s3, _bucket, key):
+        calls.append(key)
+        return objects.get(key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+
+    selected = consumer.read_generation(
+        object(),
+        "bucket",
+        "argo/data",
+        previous if retain_previous else None,
+    )
+
+    # A valid marker does not make a missing data object an empty table. Both
+    # data downloads must complete before the candidate can be considered.
+    assert calls == [
+        "argo/data/meta.json",
+        "argo/data/workflows.parquet",
+        "argo/data/runs.parquet",
+    ]
+    if retain_previous:
+        # Identity and exact payload equality prove that the candidate's other
+        # Parquet object was not mixed into the last complete generation.
+        assert selected is previous
+        assert selected.meta == previous.meta
+        assert selected.workflows == previous.workflows
+        assert selected.runs == previous.runs
+        assert selected.meta["generation_id"] != candidate.meta["generation_id"]
+    else:
+        assert selected is None
+
+
 @pytest.mark.parametrize(
     "object_name", ["meta.json", "workflows.parquet", "runs.parquet"]
 )
