@@ -37,6 +37,7 @@ works through how to choose the interval.
 
 - `src/` — the exporter itself
 - `docs/notes/` — features, constraints, design decisions
+- `docs/operations/` — production deployment, rollback, and upgrade runbooks
 - `docs/research/` — external reference material and prior art
 - `docs/plan/plan.md` — application plan with shipped phases and tracked follow-ups
 
@@ -200,6 +201,10 @@ tests/container-packaging/run.sh
 Set `DECLARATIVE_CONFIG_DIR` when that checkout is elsewhere. The check builds
 the Deployment's semver-pinned image tag locally, starts it with non-secret
 loopback test values, and removes its temporary container and image afterward.
+
+The production image release, GitOps rollout, rollback, RBAC, probe, and
+schema/generation upgrade procedures are in the
+[`production runbook`](docs/operations/production-runbook.md).
 
 ## License
 

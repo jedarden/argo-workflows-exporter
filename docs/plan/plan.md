@@ -113,7 +113,6 @@ documentation or test acceptance criteria are complete.
 
 | Bead | Status against the shipped implementation |
 |---|---|
-| `argowf-007cb27a` — production deployment and upgrade/rollback workflow | The deployment manifest, credential reference, probes, and packaging check exist, but the operator runbook for versioning, GitOps rollout, rollback, and schema/generation upgrades is not yet documented. |
 | `argowf-7a2f6154` — unreadable Parquet handling | The consumer contract and implementation retain the last paired generation when a footer cannot be read, but tests for truncated/corrupt objects, footer decode failures, and torn newer objects remain open. |
 | `argowf-cbf7a65f` — public API compatibility tests | The documented aliases and row/metric helpers exist, but the behavioral compatibility matrix for `Generation`, loading aliases, return shape, raw bytes, and `None` semantics remains open. |
 | `argowf-68f7c477` — non-missing S3 error propagation | Low-level S3 propagation is tested and the consumer contract specifies the behavior, but consumer-level bootstrap and `last_complete` propagation tests remain open. |
