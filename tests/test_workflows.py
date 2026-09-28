@@ -1,17 +1,24 @@
 import base64
 import gzip
 import hashlib
+import io
 import json
 import re
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from src import workflows
 from src.config import Cluster
 from src.k8s_api import KubernetesResponseError
-from src.parquet_io import WORKFLOWS_SCHEMA, parquet_bytes_to_table, table_to_parquet_bytes
+from src.parquet_io import (
+    RUNS_SCHEMA,
+    WORKFLOWS_SCHEMA,
+    parquet_bytes_to_table,
+    table_to_parquet_bytes,
+)
 from src.workflows import (
     MalformedWorkflowError,
     _load_failure_classes,
@@ -601,13 +608,23 @@ def test_running_workflow_fixture_has_no_finished_timestamp_or_duration():
     assert row["duration_seconds"] is None
 
 
-def test_reference_only_status_fields_do_not_change_the_exported_schema():
+@pytest.mark.parametrize(
+    "schema", [WORKFLOWS_SCHEMA, RUNS_SCHEMA], ids=["workflows", "runs"]
+)
+def test_reference_only_workflow_fields_do_not_change_rows_or_parquet_schemas(schema):
     wf = _fixture("reference_only_status_fields")
-    ignored = {"estimatedDuration", "conditions", "storedTemplates"}
+    ignored_status_fields = {"estimatedDuration", "conditions", "storedTemplates"}
     without_reference_fields = {
         **wf,
+        "metadata": {
+            field: value
+            for field, value in wf["metadata"].items()
+            if field != "ownerReferences"
+        },
         "status": {
-            field: value for field, value in wf["status"].items() if field not in ignored
+            field: value
+            for field, value in wf["status"].items()
+            if field not in ignored_status_fields
         },
     }
 
@@ -616,9 +633,9 @@ def test_reference_only_status_fields_do_not_change_the_exported_schema():
 
     assert row == baseline
     assert list(row) == WORKFLOWS_SCHEMA.names
-    assert parquet_bytes_to_table(
-        table_to_parquet_bytes([row], WORKFLOWS_SCHEMA), WORKFLOWS_SCHEMA
-    ).schema == WORKFLOWS_SCHEMA
+    stored = table_to_parquet_bytes([row], schema)
+    assert pq.read_schema(io.BytesIO(stored)) == schema
+    assert parquet_bytes_to_table(stored, schema).schema == schema
 
 
 def test_duration_handles_fractional_and_offset_timestamps():
