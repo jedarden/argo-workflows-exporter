@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: argo-workflows-exporter-sensor
+  namespace: argo-events
+spec:
+  dependencies:
+    - name: argo-workflows-exporter-push
+      eventSourceName: github-webhooks
+      eventName: argo-workflows-exporter
+      filters:
+        data:
+          - path: headers.X-Github-Event
+            type: string
+            value:
+              - push
+          - path: body.ref
+            type: string
+            value:
+              - refs/heads/main
+          - path: body.head_commit.author.name
+            type: string
+            comparator: '!='
+            value:
+              - Argo Workflows CI
+  triggers:
+    - template:
+        name: argo-workflows-exporter-build
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: argo-workflows-exporter-build-
+                namespace: argo-workflows
+              spec:
+                workflowTemplateRef:
+                  name: argo-workflows-exporter-build
+                arguments:
+                  parameters:
+                    - name: git-repo
+                      value: jedarden/argo-workflows-exporter
+                    - name: branch
+                      value: main

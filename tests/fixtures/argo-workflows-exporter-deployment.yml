@@ -1,0 +1,14 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argo-workflows-exporter
+  namespace: argo-workflows-exporter
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    spec:
+      containers:
+        - name: exporter
+          image: ronaldraygun/argo-workflows-exporter:0.2.65

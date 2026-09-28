@@ -1,0 +1,96 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: argo-workflows-exporter-build
+  namespace: argo-workflows
+spec:
+  entrypoint: build
+  arguments:
+    parameters:
+      - name: git-repo
+        value: jedarden/argo-workflows-exporter
+      - name: branch
+        value: main
+  templates:
+    - name: build
+      steps:
+        - - name: test
+            template: test
+        - - name: resolve-version
+            template: resolve-version
+        - - name: docker-build
+            template: docker-build
+            arguments:
+              parameters:
+                - name: version
+                  value: "{{steps.resolve-version.outputs.parameters.version}}"
+
+    - name: test
+      script:
+        image: python:3.12-slim
+        command: [sh]
+        source: |
+          set -e
+          git clone --depth 1 --branch {{workflow.parameters.branch}} \
+            "https://git.ardenone.com/{{workflow.parameters.git-repo}}.git" /tmp/repo
+          cd /tmp/repo
+          pip install --quiet --no-cache-dir -r requirements-dev.txt
+          python -m pytest tests/ -q
+
+    - name: resolve-version
+      script:
+        image: alpine/git
+        command: [sh]
+        source: |
+          set -e
+          git clone --branch {{workflow.parameters.branch}} \
+            "https://git.ardenone.com/{{workflow.parameters.git-repo}}.git" \
+            /tmp/repo
+          cd /tmp/repo
+
+          VERSION_CHANGED=$(git diff --name-only HEAD~1 HEAD -- VERSION 2>/dev/null | grep -c '^VERSION$' || true)
+
+          if [ "$VERSION_CHANGED" -gt 0 ] 2>/dev/null; then
+            VERSION=$(cat VERSION | tr -d '[:space:]')
+            echo "VERSION changed in commit — using ${VERSION}"
+          else
+            CURRENT=$(cat VERSION | tr -d '[:space:]')
+            MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+            MINOR=$(echo "$CURRENT" | cut -d. -f2)
+            PATCH=$(echo "$CURRENT" | cut -d. -f3)
+            PATCH=$((PATCH + 1))
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            echo "Auto-bumping ${CURRENT} → ${VERSION}"
+            echo "$VERSION" > VERSION
+            git config user.email "github@jedarden.com"
+            git config user.name "Argo Workflows CI"
+            git add VERSION
+            git commit -m "ci: auto-bump version to ${VERSION}"
+            for i in 1 2 3; do
+              git pull --rebase && git push && break
+              echo "Push attempt $i failed, retrying..."
+              sleep 3
+            done
+          fi
+
+          echo "$VERSION" > /tmp/version
+          echo "Building version: ${VERSION}"
+      outputs:
+        parameters:
+          - name: version
+            valueFrom:
+              path: /tmp/version
+
+    - name: docker-build
+      inputs:
+        parameters:
+          - name: version
+      container:
+        image: gcr.io/kaniko-project/executor:v1.23.2
+        args:
+          - --context=git://git.ardenone.com/{{workflow.parameters.git-repo}}.git#refs/heads/{{workflow.parameters.branch}}
+          - --dockerfile=Dockerfile
+          - --destination=ronaldraygun/argo-workflows-exporter:{{inputs.parameters.version}}
+          - --build-arg=VERSION={{inputs.parameters.version}}
+          - --cache=true
+          - --cache-repo=ronaldraygun/cache
