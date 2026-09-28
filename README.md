@@ -66,8 +66,11 @@ An unreachable cluster, or one whose listing fails partway through pagination,
 contributes no rows. Its rows from the previous successful snapshot are **not**
 carried into the new `workflows.parquet`; `meta.json` marks that cluster
 `"ok": false` so consumers do not mistake unavailable data for deletion.
-Column definitions and the full consumer contract are in
-[`docs/notes/output-schema.md`](docs/notes/output-schema.md).
+Column definitions and the storage-level consumer contract are in
+[`docs/notes/output-schema.md`](docs/notes/output-schema.md). The callable
+Python API for loading, selecting, normalizing, and interpreting a publication
+is documented in
+[`docs/notes/consumer-api.md`](docs/notes/consumer-api.md).
 
 The failure taxonomy is shipped, not a planned schema addition:
 `failure_fingerprint` and `failure_class` first became available in exporter

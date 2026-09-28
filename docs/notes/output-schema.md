@@ -440,7 +440,9 @@ valid published generation.
    unavailable current cluster snapshot. Its identity is (`cluster`, `uid`) —
    join and deduplicate on the pair, never on `uid` alone.
 
-The consumer helpers in `src/consumer.py` make that split executable: use
+The public callable API and return-value/failure contract are documented in
+[`consumer-api.md`](consumer-api.md). The consumer helpers in `src/consumer.py`
+make that split executable: use
 `current_snapshot_rows()` only for current inventory, and use
 `historical_rates()`, `historical_trends()`,
 `historical_duration_history()`, and `historical_failure_counts()` for
