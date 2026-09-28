@@ -16,6 +16,7 @@ import logging
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from math import isfinite
 from typing import Any, Iterable, Mapping
 
@@ -38,6 +39,49 @@ class Publication:
     meta: Mapping[str, Any]
     workflows: bytes | None
     runs: bytes | None
+
+
+class PublicationStatus(str, Enum):
+    """Outcome of a publication read with status reporting enabled."""
+
+    FRESH = "fresh"
+    FALLBACK = "fallback"
+    NO_PUBLICATION = "no-publication"
+    # ``unavailable`` is a useful name at call sites and an alias for the
+    # documented no-publication result.
+    UNAVAILABLE = NO_PUBLICATION
+
+
+class PublicationReason(str, Enum):
+    """Why a candidate was not returned as the current publication."""
+
+    MISSING = "missing"
+    INVALID = "invalid"
+    STALE = "stale"
+    INCOMPLETE = "incomplete"
+    TORN = "torn"
+
+
+@dataclass(frozen=True)
+class PublicationResult:
+    """A publication read together with its current-data status.
+
+    ``read_generation`` keeps its historical ``Publication | None`` return
+    shape by default.  The result API is opt-in so callers can distinguish a
+    newly selected candidate from a retained last-known publication without
+    changing the identity or contents of the cached ``last_complete`` value.
+    """
+
+    publication: Publication | Mapping[str, Any] | None
+    status: PublicationStatus
+    reason: PublicationReason | None = None
+
+    def __post_init__(self):
+        # Accept the string values too, which keeps the result convenient for
+        # callers constructing test doubles while exposing a stable enum API.
+        object.__setattr__(self, "status", PublicationStatus(self.status))
+        if self.reason is not None:
+            object.__setattr__(self, "reason", PublicationReason(self.reason))
 
 
 # ``Generation`` is a useful name for callers that think of the selected
@@ -191,6 +235,39 @@ def _footer_generation_id(data: bytes | None) -> str | None:
         return None
 
 
+def _generation_rejection_reason(
+    publication: Publication | Mapping[str, Any] | None,
+) -> PublicationReason | None:
+    """Return the documented rejection reason, or ``None`` if complete."""
+
+    if publication is None:
+        return PublicationReason.MISSING
+
+    if not _valid_meta(_publication_value(publication, "meta")):
+        return PublicationReason.INVALID
+
+    if (
+        _publication_value(publication, "workflows") is None
+        or _publication_value(publication, "runs") is None
+    ):
+        return PublicationReason.INCOMPLETE
+
+    ids = generation_ids(publication)
+    values = tuple(ids.values())
+    if not all(value is not None for value in values):
+        return PublicationReason.INCOMPLETE
+    if len(set(values)) != 1:
+        return PublicationReason.TORN
+
+    # The schema validator requires this relationship too. Keep this explicit
+    # check beside the footer comparison so the identity rule remains clear at
+    # the point where a publication becomes eligible for selection.
+    meta = _publication_value(publication, "meta")
+    if not values[0].startswith(f"{meta['generated_at']}-"):
+        return PublicationReason.TORN
+    return None
+
+
 def is_complete_generation(
     publication: Publication | Mapping[str, Any] | None,
 ) -> bool:
@@ -201,22 +278,56 @@ def is_complete_generation(
     not enough to commit malformed sidecar metadata.
     """
 
-    if publication is None:
-        return False
+    return _generation_rejection_reason(publication) is None
 
-    if not _valid_meta(_publication_value(publication, "meta")):
-        return False
 
-    ids = generation_ids(publication)
-    values = tuple(ids.values())
-    if not all(value is not None for value in values) or len(set(values)) != 1:
-        return False
+def _retained_result(
+    last_complete: Publication | Mapping[str, Any] | None,
+    reason: PublicationReason,
+) -> PublicationResult:
+    status = (
+        PublicationStatus.FALLBACK
+        if last_complete is not None
+        else PublicationStatus.NO_PUBLICATION
+    )
+    return PublicationResult(last_complete, status, reason)
 
-    # The schema validator requires this relationship too. Keep this explicit
-    # check beside the footer comparison so the identity rule remains clear at
-    # the point where a publication becomes eligible for selection.
-    meta = _publication_value(publication, "meta")
-    return values[0].startswith(f"{meta['generated_at']}-")
+
+def select_generation_result(
+    candidate: Publication | Mapping[str, Any] | None,
+    last_complete: Publication | Mapping[str, Any] | None,
+    *,
+    max_cycle_seconds=None,
+    now: datetime | None = None,
+) -> PublicationResult:
+    """Select a generation and report whether it is current or retained.
+
+    ``PublicationStatus.FRESH`` means the candidate was complete and selected
+    for this read. ``FALLBACK`` means ``last_complete`` was retained, and
+    ``NO_PUBLICATION`` means no publication was available to return. In the
+    latter two cases, ``reason`` identifies the rejected candidate.
+    """
+
+    reason = _generation_rejection_reason(candidate)
+    if reason is not None:
+        if reason is PublicationReason.TORN and candidate is not None:
+            ids = generation_ids(candidate)
+            log.warning(
+                "rejecting inconsistent publication generation ids: "
+                "meta=%r workflows=%r runs=%r; retaining last complete generation",
+                ids["meta"],
+                ids["workflows"],
+                ids["runs"],
+            )
+        return _retained_result(last_complete, reason)
+
+    if max_cycle_seconds is not None and not is_fresh(
+        _publication_value(candidate, "meta"),
+        datetime.now(timezone.utc) if now is None else now,
+        max_cycle_seconds,
+    ):
+        return _retained_result(last_complete, PublicationReason.STALE)
+    return PublicationResult(candidate, PublicationStatus.FRESH)
 
 
 def select_generation(
@@ -235,31 +346,19 @@ def select_generation(
     by identity and is not reinterpreted or mixed with candidate payloads.
     """
 
-    if candidate is None or not is_complete_generation(candidate):
-        ids = generation_ids(candidate) if candidate is not None else None
-        if ids is not None and len(set(ids.values())) > 1:
-            log.warning(
-                "rejecting inconsistent publication generation ids: "
-                "meta=%r workflows=%r runs=%r; retaining last complete generation",
-                ids["meta"],
-                ids["workflows"],
-                ids["runs"],
-            )
-        return last_complete
-    if max_cycle_seconds is not None and not is_fresh(
-        _publication_value(candidate, "meta"),
-        datetime.now(timezone.utc) if now is None else now,
-        max_cycle_seconds,
-    ):
-        return last_complete
-    return candidate
+    return select_generation_result(
+        candidate,
+        last_complete,
+        max_cycle_seconds=max_cycle_seconds,
+        now=now,
+    ).publication
 
 
 def _key(prefix: str, name: str) -> str:
     return s3io.object_key(prefix, name)
 
 
-def read_generation(
+def read_generation_result(
     s3,
     bucket: str,
     prefix: str,
@@ -267,7 +366,7 @@ def read_generation(
     *,
     max_cycle_seconds=None,
     now: datetime | None = None,
-) -> Publication | None:
+) -> PublicationResult:
     """Read and select the newest paired publication from S3-compatible storage.
 
     ``meta.json`` is fetched first and acts as the commit marker.  Only after
@@ -293,14 +392,14 @@ def read_generation(
 
     meta_bytes = s3io.download_bytes(s3, bucket, _key(prefix, "meta.json"))
     if meta_bytes is None:
-        return last_complete
+        return _retained_result(last_complete, PublicationReason.MISSING)
 
     try:
         meta = json.loads(meta_bytes)
         meta_schema.validate(meta)
     except (TypeError, ValueError, UnicodeDecodeError, meta_schema.MetaSchemaError) as exc:
         log.warning("ignoring an invalid meta.json candidate: %s", exc)
-        return last_complete
+        return _retained_result(last_complete, PublicationReason.INVALID)
 
     if max_cycle_seconds is not None:
         checked_at = datetime.now(timezone.utc) if now is None else now
@@ -314,20 +413,51 @@ def read_generation(
                 age,
                 threshold,
             )
-            return last_complete
+            return _retained_result(last_complete, PublicationReason.STALE)
 
     # Keep this order explicit: the marker is read before either data object,
     # then both footers are available for one consistency decision.
     workflows = s3io.download_bytes(s3, bucket, _key(prefix, "workflows.parquet"))
     runs = s3io.download_bytes(s3, bucket, _key(prefix, "runs.parquet"))
     candidate = Publication(meta=meta, workflows=workflows, runs=runs)
-    return select_generation(candidate, last_complete)
+    return select_generation_result(candidate, last_complete)
+
+
+def read_generation(
+    s3,
+    bucket: str,
+    prefix: str,
+    last_complete: Publication | None = None,
+    *,
+    max_cycle_seconds=None,
+    now: datetime | None = None,
+    with_status: bool = False,
+) -> Publication | None | PublicationResult:
+    """Read a publication, optionally returning its freshness status.
+
+    The default return value remains the historical ``Publication | None``.
+    Set ``with_status=True`` to receive :class:`PublicationResult`; this is the
+    backward-compatible opt-in for callers that must mark a retained fallback
+    or no-publication result as unavailable.
+    """
+
+    result = read_generation_result(
+        s3,
+        bucket,
+        prefix,
+        last_complete,
+        max_cycle_seconds=max_cycle_seconds,
+        now=now,
+    )
+    return result if with_status else result.publication
 
 
 # ``load_generation`` reads naturally at call sites and keeps the storage
 # operation discoverable without making two public implementations.
 load_generation = read_generation
 read_publication = read_generation
+load_generation_result = read_generation_result
+read_publication_result = read_generation_result
 
 
 # These are the phase groups used by the historical metric helpers below.

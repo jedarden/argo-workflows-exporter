@@ -9,7 +9,7 @@ back as `last_complete` on the next read.
 The canonical loading entry point is:
 
 ```python
-from src.consumer import read_generation
+from src.consumer import PublicationStatus, read_generation
 
 selected = read_generation(
     s3,
@@ -43,6 +43,33 @@ paired publication or the caller's previous `last_complete` value; it is
 never a mix of candidate and previous bytes. `Generation` is a compatibility
 alias for the same type.
 
+### `PublicationResult`
+
+```python
+PublicationResult(
+    publication: Publication | None,
+    status: "fresh" | "fallback" | "no-publication",
+    reason: "missing" | "invalid" | "stale" | "incomplete" | "torn" | None,
+)
+```
+
+`PublicationResult` is the opt-in status form of a read. Its `publication`
+field has the same value that the legacy loader would return. The status values
+have these meanings:
+
+- `fresh`: a newly selected, complete candidate is available for current use;
+  `reason` is `None`.
+- `fallback`: `last_complete` was retained, so the current candidate is
+  unavailable; `reason` identifies why it was rejected.
+- `no-publication`: no candidate was accepted and there was no
+  `last_complete` to retain; current data is unavailable.
+
+The rejection reasons are `missing` (no marker or candidate), `invalid`
+(malformed marker or metadata), `stale` (the heartbeat exceeded its effective
+cadence), `incomplete` (a data object or footer identity is absent), and
+`torn` (the object generation identities disagree). `unavailable` is an alias
+for the `no-publication` status in `PublicationStatus`.
+
 ### `read_generation`
 
 ```python
@@ -54,8 +81,27 @@ read_generation(
     *,
     max_cycle_seconds: int | float | None = None,
     now: datetime | None = None,
-) -> Publication | None
+    with_status: bool = False,
+) -> Publication | None | PublicationResult
 ```
+
+The default `with_status=False` return is unchanged for existing callers. Set
+`with_status=True` when the caller must distinguish current data from a
+retained fallback:
+
+```python
+result = read_generation(..., last_complete=last_complete, with_status=True)
+if result.status is PublicationStatus.FRESH:
+    use_current_data(result.publication)
+else:
+    mark_current_data_unavailable(result.reason)
+```
+
+`read_generation_result(...)` is the explicit equivalent for callers that
+prefer a result-only entry point. `load_generation_result` and
+`read_publication_result` are aliases for it. The existing
+`load_generation` and `read_publication` aliases retain the legacy return
+shape, including the identity-preserving `last_complete` fallback.
 
 The reader performs this ordered operation:
 
@@ -108,9 +154,10 @@ age = consumer_now - meta.generated_at
 
 The sidecar is stale at `age >= effective_cadence`. A complete but stale
 publication is still internally consistent; it is rejected only for current
-use when freshness checking is requested. The loader does not return a status
-object, so callers should track whether the returned value is a newly selected
-fresh publication, a retained last-known publication, or `None`.
+use when freshness checking is requested. Use `PublicationResult` when the
+caller must mark a retained last-known publication or no-publication result as
+unavailable; the legacy loader remains available for callers that only need the
+selected payload.
 
 ## Pairing and validation helpers
 
@@ -122,6 +169,9 @@ transport or wants to make the selection step explicit:
   returned as `None`.
 - `is_complete_generation(publication)` validates `meta`, requires all three
   ids to be equal and non-empty, and checks the id's timestamp prefix.
+- `select_generation_result(candidate, last_complete, *,
+  max_cycle_seconds=None, now=None)` returns a `PublicationResult` with the
+  same selection rules and status values as the status-aware loader.
 - `select_generation(candidate, last_complete, *, max_cycle_seconds=None,
   now=None)` returns the candidate only if it passes completeness and optional
   freshness checks; otherwise it returns `last_complete` unchanged.

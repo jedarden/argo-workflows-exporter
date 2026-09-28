@@ -7,6 +7,7 @@ changes to the public aliases, return shape, row views, and metric helpers.
 """
 
 import json
+from datetime import datetime, timezone
 
 import pyarrow as pa
 import pytest
@@ -100,6 +101,101 @@ def test_public_loaders_return_decoded_meta_and_raw_parquet_bytes(loader, monkey
     assert selected.runs is runs
     assert selected.workflows == objects["argo/data/workflows.parquet"]
     assert selected.runs == objects["argo/data/runs.parquet"]
+
+
+def test_read_generation_can_report_a_fresh_publication_without_changing_default_shape(
+    monkeypatch,
+):
+    meta = _meta()
+    workflows, runs = _published_bytes()
+    objects = _stored_objects(meta, workflows, runs)
+
+    monkeypatch.setattr(
+        consumer.s3io,
+        "download_bytes",
+        lambda _s3, _bucket, key: objects.get(key),
+    )
+
+    selected = consumer.read_generation(
+        object(),
+        "bucket",
+        "argo/data",
+        max_cycle_seconds=60,
+        now=datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc),
+        with_status=True,
+    )
+
+    assert isinstance(selected, consumer.PublicationResult)
+    assert selected.status is consumer.PublicationStatus.FRESH
+    assert selected.reason is None
+    assert selected.publication is not None
+    assert selected.publication.meta == meta
+
+    # Existing callers still receive the original Publication shape unless
+    # they explicitly opt into status reporting.
+    legacy = consumer.read_generation(object(), "bucket", "argo/data")
+    assert type(legacy) is consumer.Publication
+
+
+def test_read_generation_reports_a_stale_last_complete_as_fallback(monkeypatch):
+    previous_meta = _meta()
+    previous_workflows, previous_runs = _published_bytes()
+    previous = consumer.Publication(
+        meta=previous_meta, workflows=previous_workflows, runs=previous_runs
+    )
+
+    stale_generation_id = "2026-09-27T11:00:00Z-222222bbbbbb"
+    stale_meta = {
+        **previous_meta,
+        "generated_at": "2026-09-27T11:00:00Z",
+        "generation_id": stale_generation_id,
+    }
+    stale_workflows = parquet_io.table_to_parquet_bytes(
+        [{"uid": "stale", "cluster": "ci", "phase": "Running"}],
+        parquet_io.WORKFLOWS_SCHEMA,
+        stale_generation_id,
+    )
+    stale_runs = parquet_io.table_to_parquet_bytes(
+        [{"uid": "stale-run", "cluster": "ci", "phase": "Succeeded"}],
+        parquet_io.RUNS_SCHEMA,
+        stale_generation_id,
+    )
+    objects = _stored_objects(stale_meta, stale_workflows, stale_runs)
+
+    monkeypatch.setattr(
+        consumer.s3io,
+        "download_bytes",
+        lambda _s3, _bucket, key: objects.get(key),
+    )
+
+    selected = consumer.read_generation(
+        object(),
+        "bucket",
+        "argo/data",
+        previous,
+        max_cycle_seconds=60,
+        now=datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc),
+        with_status=True,
+    )
+
+    assert isinstance(selected, consumer.PublicationResult)
+    assert selected.status is consumer.PublicationStatus.FALLBACK
+    assert selected.reason is consumer.PublicationReason.STALE
+    assert selected.publication is previous
+
+
+def test_read_generation_reports_no_publication_when_bootstrapping(monkeypatch):
+    monkeypatch.setattr(consumer.s3io, "download_bytes", lambda *_args: None)
+
+    selected = consumer.read_generation(
+        object(), "bucket", "argo/data", with_status=True
+    )
+
+    assert isinstance(selected, consumer.PublicationResult)
+    assert selected.status is consumer.PublicationStatus.NO_PUBLICATION
+    assert selected.status is consumer.PublicationStatus.UNAVAILABLE
+    assert selected.reason is consumer.PublicationReason.MISSING
+    assert selected.publication is None
 
 
 def test_public_loaders_are_aliases_of_read_generation():
