@@ -65,6 +65,12 @@ Two tables and a sidecar, defined in
 
 ## Implementation phases
 
+A checked phase means that its core implementation and shipped behavior are in
+place. It does not close follow-up work that was identified after the phase
+shipped, such as operator runbooks or additional consumer contract coverage.
+Those items are tracked explicitly below rather than being hidden by the
+phase checkboxes.
+
 - [x] **Phase 1: Collector.** Config, paginated read-only API access,
   extraction, ledger, Parquet output, S3 upload, health endpoint, container
   image, unit tests, docs. Verified end-to-end against a live Argo
@@ -98,6 +104,19 @@ Two tables and a sidecar, defined in
   never run are visible; per-step rows rather than just the first failure;
   decompressing `status.compressedNodes`; queue-time (`created_at` to
   `started_at`) as a first-class column for scheduling pressure.
+
+## Remaining tracked follow-ups
+
+These open beads refine or document shipped behavior; they do not invalidate
+the collector or deployment claims above. They remain open until their stated
+documentation or test acceptance criteria are complete.
+
+| Bead | Status against the shipped implementation |
+|---|---|
+| `argowf-007cb27a` — production deployment and upgrade/rollback workflow | The deployment manifest, credential reference, probes, and packaging check exist, but the operator runbook for versioning, GitOps rollout, rollback, and schema/generation upgrades is not yet documented. |
+| `argowf-7a2f6154` — unreadable Parquet handling | The consumer contract and implementation retain the last paired generation when a footer cannot be read, but tests for truncated/corrupt objects, footer decode failures, and torn newer objects remain open. |
+| `argowf-cbf7a65f` — public API compatibility tests | The documented aliases and row/metric helpers exist, but the behavioral compatibility matrix for `Generation`, loading aliases, return shape, raw bytes, and `None` semantics remains open. |
+| `argowf-68f7c477` — non-missing S3 error propagation | Low-level S3 propagation is tested and the consumer contract specifies the behavior, but consumer-level bootstrap and `last_complete` propagation tests remain open. |
 
 ## Open questions
 

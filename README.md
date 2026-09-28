@@ -38,7 +38,12 @@ works through how to choose the interval.
 - `src/` — the exporter itself
 - `docs/notes/` — features, constraints, design decisions
 - `docs/research/` — external reference material and prior art
-- `docs/plan/plan.md` — complete application plan
+- `docs/plan/plan.md` — application plan with shipped phases and tracked follow-ups
+
+The checked phases in the plan identify the collector and deployment behavior
+that has shipped; they do not imply that every later operator-documentation or
+consumer-contract hardening task is closed. The plan's follow-up table is the
+authoritative status for that remaining work.
 
 ## Output
 
