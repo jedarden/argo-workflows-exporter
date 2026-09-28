@@ -313,6 +313,15 @@ def _paired(meta, workflows_bytes, runs_bytes):
     return ids == {meta["generation_id"]}
 
 
+def _assert_generation_id_format(generation_id, generated_at):
+    """Assert the producer's complete documented generation-id contract."""
+    prefix, separator, suffix = generation_id.rpartition("-")
+    assert separator == "-"
+    assert prefix == generated_at
+    assert len(suffix) == 12
+    assert all(character in "0123456789abcdef" for character in suffix)
+
+
 def _assert_published_counts_and_generation(meta, workflows_bytes, runs_bytes):
     """Check the sidecar against both published Parquet objects as a reader would."""
     workflows = parquet_io.parquet_bytes_to_table(
@@ -1571,7 +1580,7 @@ def test_one_generation_id_across_all_three_objects(monkeypatch):
 
     meta = json.loads(s3.objects["argo/data/meta.json"])
     assert meta["generated_at"] == _NEW_GENERATED_AT
-    assert meta["generation_id"].startswith(_NEW_GENERATED_AT)
+    _assert_generation_id_format(meta["generation_id"], _NEW_GENERATED_AT)
     assert _paired(meta, s3.objects["argo/data/workflows.parquet"], s3.objects["argo/data/runs.parquet"])
     # File-level and row-level identities agree: the snapshot's rows were
     # observed by the very cycle the metadata names.
@@ -1964,6 +1973,12 @@ def test_two_cycles_in_the_same_second_get_distinct_generation_ids(
     when the two snapshots contain the same rows, including empty snapshots.
     """
     monkeypatch.setattr(main, "_now", lambda: _GENERATED_AT)
+    suffixes = iter(("a" * 32, "b" * 32))
+    monkeypatch.setattr(
+        main.uuid,
+        "uuid4",
+        lambda: SimpleNamespace(hex=next(suffixes)),
+    )
     s3 = _MemoryS3()
     cfg = _config([Cluster(name="ci")])
     _list(monkeypatch, {"ci": (rows, True)})
@@ -1980,6 +1995,8 @@ def test_two_cycles_in_the_same_second_get_distinct_generation_ids(
 
     assert first_meta["generated_at"] == second_meta["generated_at"] == _GENERATED_AT
     assert first_meta["generation_id"] != second_meta["generation_id"]
+    _assert_generation_id_format(first_meta["generation_id"], _GENERATED_AT)
+    _assert_generation_id_format(second_meta["generation_id"], _GENERATED_AT)
     assert first_meta["workflows"] == second_meta["workflows"] == expected_workflows
     assert first_meta["runs"] == second_meta["runs"] == expected_runs
     assert first_meta["clusters"] == second_meta["clusters"] == [

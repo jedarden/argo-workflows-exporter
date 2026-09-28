@@ -68,7 +68,9 @@ def test_empty_but_reachable_cluster_is_valid():
         ("generated_at", "2026-02-30T19:00:00Z"),  # shaped right, not a date
         ("generated_at", None),
         ("generation_id", "2026-09-23T19:00:00Z"),  # no suffix at all
-        ("generation_id", "2026-09-23T19:00:00Z-short"),
+        ("generation_id", "2026-09-23T19:00:00Z-abcdef12345"),  # 11 hex characters
+        ("generation_id", "2026-09-23T19:00:00Z-abcdef1234567"),  # 13 hex characters
+        ("generation_id", "2026-09-23T19:00:00Z-abcdef12345g"),  # non-hex suffix
         ("generation_id", "2026-09-23T19:00:00Z-3F9C2A1B7D44"),  # uppercase hex
         ("poll_interval_seconds", 0),
         ("poll_interval_seconds", 300.0),

@@ -468,6 +468,39 @@ def test_consumer_rejects_generation_id_with_a_different_timestamp_prefix(fixtur
     assert consumer.select_generation(mismatched, publication) is publication
 
 
+@pytest.mark.parametrize(
+    "malformed_id",
+    [
+        pytest.param("2026-09-27T12:00:00Z-abcdef12345", id="short-suffix"),
+        pytest.param("2026-09-27T12:00:00Z-abcdef1234567", id="long-suffix"),
+        pytest.param("2026-09-27T12:00:00Z-abcdef12345g", id="non-hex-suffix"),
+        pytest.param("2026-09-27T12:00:00Z-ABCDEF123456", id="uppercase-suffix"),
+    ],
+)
+def test_consumer_rejects_malformed_footer_generation_ids_during_pairing(
+    fixtures, malformed_id
+):
+    """A valid marker must not make malformed Parquet identities current."""
+    previous = _materialize(fixtures["complete"])
+    candidate = consumer.Publication(
+        meta=previous.meta,
+        workflows=parquet_io.table_to_parquet_bytes(
+            [], parquet_io.WORKFLOWS_SCHEMA, malformed_id
+        ),
+        runs=parquet_io.table_to_parquet_bytes([], parquet_io.RUNS_SCHEMA, malformed_id),
+    )
+
+    assert consumer.generation_ids(candidate) == {
+        "meta": previous.meta["generation_id"],
+        "workflows": malformed_id,
+        "runs": malformed_id,
+    }
+    result = consumer.select_generation_result(candidate, previous)
+    assert result.status is consumer.PublicationStatus.FALLBACK
+    assert result.reason is consumer.PublicationReason.TORN
+    assert result.publication is previous
+
+
 def _stored_objects(publication, prefix="argo/data"):
     return {
         f"{prefix}/meta.json": json.dumps(publication.meta).encode(),
