@@ -65,9 +65,10 @@ def table_to_parquet_bytes(rows, schema, generation_id: str | None = None) -> by
 
 def read_generation_id(data: bytes) -> str | None:
     """Reads a stored object's generation id out of its file metadata, or
-    returns None for an object written before generations existed (or for
-    bytes that are not Parquet at all — callers decide which of those is an
-    error)."""
+    returns None for an object written before generations existed.  An
+    unreadable non-None payload raises the Parquet reader's exception; the
+    consumer catches that at the footer-validation boundary and rejects the
+    candidate instead of treating it as an empty object."""
     metadata = pq.read_schema(io.BytesIO(data)).metadata or {}
     value = metadata.get(GENERATION_ID_KEY)
     return value.decode() if value is not None else None
@@ -95,8 +96,14 @@ def conform(table: pa.Table, schema: pa.Schema) -> pa.Table:
 
 
 def parquet_bytes_to_table(data, schema) -> pa.Table:
-    """Reads stored Parquet bytes, or returns an empty table on the first run
-    (nothing written yet)."""
+    """Read stored Parquet bytes using ``schema``.
+
+    ``None`` means the object is absent, which is the producer's normal
+    pre-first-publication state and maps to an empty typed table for the
+    producer's read-modify-write path.  Any non-None decode failure propagates
+    instead: truncated or corrupt data must not be mistaken for an empty
+    publication.
+    """
     if data is None:
         return pa.Table.from_pylist([], schema=schema)
     return conform(pq.read_table(io.BytesIO(data)), schema)

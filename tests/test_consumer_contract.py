@@ -764,6 +764,67 @@ def test_read_generation_retains_the_last_complete_generation_for_a_torn_publica
     ).to_pylist()[0]["uid"] == "wf-complete"
 
 
+@pytest.mark.parametrize("corruption", ["truncated", "non-parquet"])
+@pytest.mark.parametrize("object_name", ["workflows.parquet", "runs.parquet"])
+def test_read_generation_rejects_unreadable_newer_objects_and_retains_previous(
+    fixtures, monkeypatch, caplog, corruption, object_name
+):
+    previous = _materialize(fixtures["complete"])
+    newer = _materialize(fixtures["recovered_cluster"])
+    objects = _stored_objects(newer)
+    key = f"argo/data/{object_name}"
+    if corruption == "truncated":
+        objects[key] = objects[key][:-8]
+    else:
+        objects[key] = b"not a parquet object"
+    calls = []
+
+    def download(_s3, _bucket, requested_key):
+        calls.append(requested_key)
+        return objects.get(requested_key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+    caplog.set_level("WARNING", logger="src.consumer")
+
+    selected = consumer.read_generation(object(), "bucket", "argo/data", previous)
+
+    assert selected is previous
+    assert calls == [
+        "argo/data/meta.json",
+        "argo/data/workflows.parquet",
+        "argo/data/runs.parquet",
+    ]
+    assert "could not read a Parquet generation footer" in caplog.text
+    assert selected.workflows == previous.workflows
+    assert selected.runs == previous.runs
+
+
+def test_read_generation_distinguishes_corrupt_data_from_absent_bootstrap(
+    fixtures, monkeypatch, caplog
+):
+    candidate = _materialize(fixtures["complete"])
+    objects = _stored_objects(candidate)
+    objects["argo/data/workflows.parquet"] = b"not a parquet object"
+    calls = []
+
+    def download(_s3, _bucket, key):
+        calls.append(key)
+        return objects.get(key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+    caplog.set_level("WARNING", logger="src.consumer")
+
+    selected = consumer.read_generation(object(), "bucket", "argo/data")
+
+    assert selected is None
+    assert calls == [
+        "argo/data/meta.json",
+        "argo/data/workflows.parquet",
+        "argo/data/runs.parquet",
+    ]
+    assert "could not read a Parquet generation footer" in caplog.text
+
+
 def test_overlapping_writers_never_expose_an_interleaved_generation(
     fixtures, monkeypatch, caplog
 ):

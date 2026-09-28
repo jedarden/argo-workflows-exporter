@@ -264,6 +264,38 @@ def test_generation_id_roundtrips_through_file_metadata():
     assert parquet_bytes_to_table(data, RUNS_SCHEMA).num_rows == 0
 
 
+def test_generation_id_reads_the_footer_without_decoding_rows(monkeypatch):
+    data = table_to_parquet_bytes(
+        [{"uid": "footer-only"}], RUNS_SCHEMA, "2026-09-27T12:00:00Z-abcdef123456"
+    )
+
+    def fail_if_rows_are_decoded(*args, **kwargs):
+        raise AssertionError("generation identity must be read from the footer only")
+
+    monkeypatch.setattr(pq, "read_table", fail_if_rows_are_decoded)
+
+    assert read_generation_id(data) == "2026-09-27T12:00:00Z-abcdef123456"
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        pytest.param(b"not a parquet object", id="non-parquet-bytes"),
+        pytest.param(
+            table_to_parquet_bytes(
+                [{"uid": "truncated"}],
+                RUNS_SCHEMA,
+                "2026-09-27T12:00:00Z-abcdef123456",
+            )[:-8],
+            id="truncated-footer",
+        ),
+    ],
+)
+def test_unreadable_parquet_is_not_decoded_as_an_empty_table(corrupt):
+    with pytest.raises((OSError, pa.ArrowInvalid)):
+        parquet_bytes_to_table(corrupt, RUNS_SCHEMA)
+
+
 def test_object_written_without_a_generation_reads_back_as_none():
     assert read_generation_id(table_to_parquet_bytes([], WORKFLOWS_SCHEMA)) is None
 
