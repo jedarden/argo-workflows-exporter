@@ -319,6 +319,33 @@ def test_valid_non_torn_fixtures_are_selected_and_preserve_snapshot_semantics(
         assert runs == []
 
 
+@pytest.mark.parametrize(
+    "case_name",
+    ["complete", "zero_row", "recovered_cluster", "failed_clusters"],
+)
+def test_current_inventory_reads_workflows_snapshot_and_respects_availability(
+    fixtures, case_name
+):
+    publication = _materialize(fixtures[case_name])
+    expected = fixtures[case_name]["expected"]
+
+    rows = consumer.current_snapshot_rows(publication)
+
+    assert [row["uid"] for row in rows] == expected["workflow_uids"]
+    assert {row["cluster"] for row in rows} == set(expected["workflow_clusters"])
+    assert {
+        row["cluster"]
+        for row in rows
+    } <= {
+        name
+        for name, available in expected["cluster_availability"].items()
+        if available
+    }
+
+    if case_name == "zero_row":
+        assert rows == []
+
+
 @pytest.mark.parametrize("case_name", ["unreachable_cluster", "partial_pagination_failure"])
 def test_failed_cluster_zero_count_is_unavailable_not_empty_or_deleted(fixtures, case_name):
     publication = _materialize(fixtures[case_name])

@@ -349,10 +349,24 @@ def current_snapshot_rows(publication: Publication | Mapping[str, Any]):
 
     This is the only row reader in this module that uses the snapshot file.
     Callers should use it for live inventory views, never for rates, trends,
-    duration history, or outcome counts.
+    duration history, or outcome counts.  A partial snapshot contains rows
+    only for clusters that completed their listing, but apply the sidecar's
+    availability map here as well so a malformed or hand-built publication
+    cannot turn an unavailable cluster's zero count into an empty inventory.
     """
 
-    return _rows(publication, "workflows", parquet_io.WORKFLOWS_SCHEMA)
+    rows = _rows(publication, "workflows", parquet_io.WORKFLOWS_SCHEMA)
+    meta = _publication_value(publication, "meta")
+    if not isinstance(meta, Mapping) or "clusters" not in meta:
+        # Metadata-less publications are useful for callers that only need
+        # schema decoding; read_generation validates the real sidecar before
+        # this helper is used for a published inventory.
+        return rows
+
+    available_clusters = {
+        name for name, available in cluster_availability(publication).items() if available
+    }
+    return [row for row in rows if row.get("cluster") in available_clusters]
 
 
 def historical_run_rows(publication: Publication | Mapping[str, Any]):

@@ -142,6 +142,19 @@ def test_current_snapshot_reader_is_separate_from_historical_readers():
     ]
 
 
+def test_current_snapshot_reader_does_not_need_runs_parquet():
+    publication = consumer.Publication(
+        meta={},
+        workflows=parquet_io.table_to_parquet_bytes(
+            [{"uid": "live", "cluster": "ci", "phase": "Running"}],
+            parquet_io.WORKFLOWS_SCHEMA,
+        ),
+        runs=b"not a parquet file",
+    )
+
+    assert [row["uid"] for row in consumer.current_snapshot_rows(publication)] == ["live"]
+
+
 @pytest.mark.parametrize("bucket", ["minute", "month", ""])  # unsupported historical views
 def test_historical_trends_reject_unknown_bucket(bucket):
     publication = _publication([], _runs())
