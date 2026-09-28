@@ -142,6 +142,36 @@ def test_current_snapshot_reader_is_separate_from_historical_readers():
     ]
 
 
+def test_empty_current_snapshot_does_not_hide_retained_ledger_rows():
+    retained = {
+        "uid": "reaped-success",
+        "cluster": "ci",
+        "phase": "Succeeded",
+        "finished_at": "2026-09-27T10:00:00Z",
+        "duration_seconds": 42,
+        "first_seen_at": "2026-09-27T09:55:00Z",
+        "last_seen_at": "2026-09-27T10:00:00Z",
+    }
+    publication = _publication([], [retained])
+
+    # A confirmed empty workflows snapshot means that no workflow is current,
+    # even though the ledger still retains the completed run for history.
+    assert consumer.current_snapshot_rows(publication) == []
+    assert [row["uid"] for row in consumer.historical_run_rows(publication)] == [
+        "reaped-success"
+    ]
+    assert consumer.historical_metrics(publication)["rates"] == {
+        "total": 1,
+        "completed": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "error": 0,
+        "success_rate": 1.0,
+        "failure_rate": 0.0,
+        "completion_rate": 1.0,
+    }
+
+
 def test_current_snapshot_reader_does_not_need_runs_parquet():
     publication = consumer.Publication(
         meta={},
