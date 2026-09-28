@@ -18,6 +18,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
+IMAGE_REPOSITORY = "ronaldraygun/argo-workflows-exporter"
+DEPLOYMENT_PATH = Path("k8s/ardenone-cluster/argo-workflows-exporter/deployment.yml")
+SEMVER_TAG = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)")
 
 
 def _load_fixture(name: str) -> dict:
@@ -34,6 +37,36 @@ def _sensor() -> dict:
 
 def _deployment() -> dict:
     return _load_fixture("argo-workflows-exporter-deployment.yml")
+
+
+def _deployment_image(deployment: dict) -> str:
+    return deployment["spec"]["template"]["spec"]["containers"][0]["image"]
+
+
+def _set_deployment_image(path: Path, image: str) -> None:
+    deployment = yaml.safe_load(path.read_text(encoding="utf-8"))
+    deployment["spec"]["template"]["spec"]["containers"][0]["image"] = image
+    path.write_text(yaml.safe_dump(deployment, sort_keys=False), encoding="utf-8")
+
+
+def _assert_immutable_semver_image(image: str) -> str:
+    match = re.fullmatch(
+        rf"{re.escape(IMAGE_REPOSITORY)}:(?P<tag>[^:@]+)", image
+    )
+    assert match, f"production image must use a tag: {image}"
+    tag = match.group("tag")
+    assert SEMVER_TAG.fullmatch(tag), f"production image must use semver: {image}"
+    return tag
+
+
+def _promotion_image(build: dict) -> str:
+    """Return the only image reference the production promotion may use."""
+    assert build["status"] == "Succeeded", "promotion waits for a successful build"
+    tag = build["published_tag"]
+    assert tag in build["published_tags"], "promotion requires the published tag"
+    image = f"{IMAGE_REPOSITORY}:{tag}"
+    _assert_immutable_semver_image(image)
+    return image
 
 
 def _templates(workflow: dict) -> dict[str, dict]:
@@ -334,3 +367,105 @@ def test_production_promotion_is_separate_and_uses_an_immutable_image_tag():
     assert "declarative-config" not in workflow_text
     assert "deployment.yml" not in workflow_text
     assert "kubectl" not in workflow_text
+
+
+def test_production_upgrade_and_rollback_use_only_successful_immutable_tags(
+    tmp_path: Path,
+):
+    """Exercise the runbook's GitOps promotion and rollback sequence."""
+    config_repo = tmp_path / "declarative-config"
+    deployment_path = config_repo / DEPLOYMENT_PATH
+    deployment_path.parent.mkdir(parents=True)
+    deployment_path.write_text(
+        (FIXTURES / "argo-workflows-exporter-deployment.yml").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    _git(tmp_path, "init", "--initial-branch=main", str(config_repo))
+    _git(config_repo, "config", "user.name", "Release test")
+    _git(config_repo, "config", "user.email", "release-test@example.invalid")
+    _git(config_repo, "add", str(DEPLOYMENT_PATH))
+    _git(config_repo, "commit", "-m", "production baseline")
+
+    baseline_image = _deployment_image(
+        yaml.safe_load(deployment_path.read_text(encoding="utf-8"))
+    )
+    baseline_tag = _assert_immutable_semver_image(baseline_image)
+
+    # These fallback-shaped fields model values that are available to the
+    # release workflow but are not valid production image selectors.
+    build = {
+        "status": "Succeeded",
+        "published_tag": "0.2.66",
+        "published_tags": ["0.2.66"],
+        "version_file": "0.2.64",
+        "source_revision": "a" * 40,
+    }
+    promoted_image = _promotion_image(build)
+    promoted_tag = _assert_immutable_semver_image(promoted_image)
+    assert promoted_tag == build["published_tag"]
+    assert promoted_tag != build["version_file"]
+    assert promoted_tag != build["source_revision"]
+
+    _set_deployment_image(deployment_path, promoted_image)
+    _git(config_repo, "add", str(DEPLOYMENT_PATH))
+    _git(config_repo, "commit", "-m", f"promote exporter to {promoted_tag}")
+    assert _deployment_image(
+        yaml.safe_load(deployment_path.read_text(encoding="utf-8"))
+    ) == promoted_image
+    assert _git(
+        config_repo, "show", "--format=", "--name-only", "HEAD"
+    ).splitlines() == [str(DEPLOYMENT_PATH)]
+
+    # Rollback derives the target from the previous GitOps deployment commit,
+    # never from VERSION, a source revision, or a floating image tag.
+    previous_deployment = yaml.safe_load(
+        _git(config_repo, "show", f"HEAD~1:{DEPLOYMENT_PATH}")
+    )
+    rollback_image = _deployment_image(previous_deployment)
+    assert _assert_immutable_semver_image(rollback_image) == baseline_tag
+    assert rollback_image == baseline_image
+
+    _set_deployment_image(deployment_path, rollback_image)
+    _git(config_repo, "add", str(DEPLOYMENT_PATH))
+    _git(config_repo, "commit", "-m", f"rollback exporter to {baseline_tag}")
+    assert _deployment_image(
+        yaml.safe_load(deployment_path.read_text(encoding="utf-8"))
+    ) == baseline_image
+    assert _git(
+        config_repo, "show", "--format=", "--name-only", "HEAD"
+    ).splitlines() == [str(DEPLOYMENT_PATH)]
+
+
+@pytest.mark.parametrize(
+    "published_tag",
+    [
+        "VERSION",
+        "latest",
+        "a" * 40,
+    ],
+    ids=["version-fallback", "floating-tag", "commit-id-fallback"],
+)
+def test_production_promotion_rejects_non_semver_release_selectors(
+    published_tag: str,
+):
+    build = {
+        "status": "Succeeded",
+        "published_tag": published_tag,
+        "published_tags": [published_tag],
+    }
+
+    with pytest.raises(AssertionError):
+        _promotion_image(build)
+
+
+def test_production_promotion_rejects_an_unsuccessful_build():
+    build = {
+        "status": "Failed",
+        "published_tag": "0.2.66",
+        "published_tags": ["0.2.66"],
+    }
+
+    with pytest.raises(AssertionError):
+        _promotion_image(build)
