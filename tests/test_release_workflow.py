@@ -195,7 +195,11 @@ def test_release_workflow_runs_tests_before_resolving_and_building():
         {
             "name": "version",
             "value": "{{steps.resolve-version.outputs.parameters.version}}",
-        }
+        },
+        {
+            "name": "source-sha",
+            "value": "{{steps.resolve-version.outputs.parameters.source-sha}}",
+        },
     ]
 
 
@@ -328,27 +332,31 @@ def test_ci_writeback_author_is_excluded_from_the_build_sensor():
     assert 'git config user.name "Argo Workflows CI"' in resolve_source
 
 
-def test_kaniko_receives_the_single_resolved_semver_for_tag_and_build_arg():
+def test_buildkit_receives_the_single_resolved_semver_and_source_sha():
     workflow = _workflow()
     templates = _templates(workflow)
-    docker_args = templates["docker-build"]["container"]["args"]
+    docker = templates["docker-build"]
+    build_source = docker["container"]["args"][0]
     build_steps = templates["build"]["steps"]
 
     assert build_steps[2][0]["arguments"]["parameters"][0]["value"] == (
         "{{steps.resolve-version.outputs.parameters.version}}"
     )
+    assert build_steps[2][0]["arguments"]["parameters"][1]["value"] == (
+        "{{steps.resolve-version.outputs.parameters.source-sha}}"
+    )
     assert (
-        "--destination=ronaldraygun/argo-workflows-exporter:"
-        "{{inputs.parameters.version}}"
-    ) in docker_args
-    assert "--build-arg=VERSION={{inputs.parameters.version}}" in docker_args
-    assert (
-        "--context=git://git.ardenone.com/{{workflow.parameters.git-repo}}.git"
-        "#refs/heads/{{workflow.parameters.branch}}"
-    ) in docker_args
+        "type=image,name=ronaldraygun/argo-workflows-exporter:"
+        "{{inputs.parameters.version}},push=true"
+    ) in build_source
+    assert '--opt "build-arg:VERSION={{inputs.parameters.version}}"' in build_source
+    assert "#{{inputs.parameters.source-sha}}" in build_source
+    assert docker["metadata"]["labels"]["ci.ardenone.com/buildkit-client"] == "true"
+    assert docker["container"]["resources"]["requests"]["ephemeral-storage"] == "64Mi"
 
     resolve_source = templates["resolve-version"]["script"]["source"]
     assert 'echo "$VERSION" > /tmp/version' in resolve_source
+    assert "git rev-parse HEAD > /tmp/source-sha" in resolve_source
     assert "COPY VERSION ." in (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
 

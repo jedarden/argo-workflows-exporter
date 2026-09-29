@@ -11,6 +11,13 @@ spec:
         value: jedarden/argo-workflows-exporter
       - name: branch
         value: main
+  volumes:
+    - name: docker-config
+      secret:
+        secretName: docker-hub-registry
+        items:
+          - key: .dockerconfigjson
+            path: config.json
   templates:
     - name: build
       steps:
@@ -24,6 +31,8 @@ spec:
               parameters:
                 - name: version
                   value: "{{steps.resolve-version.outputs.parameters.version}}"
+                - name: source-sha
+                  value: "{{steps.resolve-version.outputs.parameters.source-sha}}"
 
     - name: test
       script:
@@ -74,23 +83,58 @@ spec:
           fi
 
           echo "$VERSION" > /tmp/version
+          git rev-parse HEAD > /tmp/source-sha
+          grep -Eq '^[0-9a-f]{40}$' /tmp/source-sha
           echo "Building version: ${VERSION}"
       outputs:
         parameters:
           - name: version
             valueFrom:
               path: /tmp/version
+          - name: source-sha
+            valueFrom:
+              path: /tmp/source-sha
 
     - name: docker-build
+      metadata:
+        labels:
+          ci.ardenone.com/buildkit-client: "true"
       inputs:
         parameters:
           - name: version
+          - name: source-sha
       container:
-        image: gcr.io/kaniko-project/executor:v1.23.2
+        image: moby/buildkit:v0.33.0-rootless@sha256:80b15f0735e87bab7bf59ec4d695dfb4a7cfb25521cf56dc75d6f256285b63ef
+        command: [/bin/sh, -ec]
         args:
-          - --context=git://git.ardenone.com/{{workflow.parameters.git-repo}}.git#refs/heads/{{workflow.parameters.branch}}
-          - --dockerfile=Dockerfile
-          - --destination=ronaldraygun/argo-workflows-exporter:{{inputs.parameters.version}}
-          - --build-arg=VERSION={{inputs.parameters.version}}
-          - --cache=true
-          - --cache-repo=ronaldraygun/cache
+          - |
+            CONTEXT="https://git.ardenone.com/{{workflow.parameters.git-repo}}.git#{{inputs.parameters.source-sha}}"
+            buildctl --addr tcp://acb-buildkitd:1234 --wait build \
+              --progress=plain \
+              --frontend=dockerfile.v0 \
+              --opt "context=${CONTEXT}" \
+              --opt filename=Dockerfile \
+              --opt "build-arg:VERSION={{inputs.parameters.version}}" \
+              --secret id=GIT_AUTH_TOKEN,env=GIT_AUTH_TOKEN \
+              --output "type=image,name=ronaldraygun/argo-workflows-exporter:{{inputs.parameters.version}},push=true"
+        env:
+          - name: DOCKER_CONFIG
+            value: /home/user/.docker
+          - name: GIT_AUTH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: forgejo-webhook-token
+                key: token
+        volumeMounts:
+          - name: docker-config
+            mountPath: /home/user/.docker
+            readOnly: true
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+            ephemeral-storage: 64Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+            ephemeral-storage: 256Mi
