@@ -69,7 +69,7 @@ def read_generation_id(data: bytes) -> str | None:
     unreadable non-None payload raises the Parquet reader's exception; the
     consumer catches that at the footer-validation boundary and rejects the
     candidate instead of treating it as an empty object."""
-    metadata = pq.read_schema(io.BytesIO(data)).metadata or {}
+    metadata = pq.read_metadata(io.BytesIO(data)).metadata or {}
     value = metadata.get(GENERATION_ID_KEY)
     return value.decode() if value is not None else None
 

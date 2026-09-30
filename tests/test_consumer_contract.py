@@ -260,6 +260,44 @@ def test_pre_generation_id_fixture_retains_the_last_complete_generation(fixtures
     assert consumer.select_generation(legacy, previous) is previous
 
 
+def test_consumer_reads_zero_row_footer_ids_and_rejects_legacy_metadataless_files(
+    fixtures, monkeypatch
+):
+    """Pairing uses footer metadata even when no rows exist.
+
+    A pre-generation file has the same readable schema and rows as a current
+    file, but its missing footer key must remain distinguishable from a valid
+    zero-row generation. Keep this at the consumer boundary so the contract
+    covers both the lookup and the resulting publication decision.
+    """
+    def fail_if_schema_is_used(*args, **kwargs):
+        raise AssertionError("generation identity must use footer metadata, not schema")
+
+    monkeypatch.setattr(parquet_io.pq, "read_schema", fail_if_schema_is_used)
+
+    empty = _materialize(fixtures["zero_row"])
+    assert consumer.generation_ids(empty) == {
+        "meta": "2026-09-27T12:02:00Z-333333cccccc",
+        "workflows": "2026-09-27T12:02:00Z-333333cccccc",
+        "runs": "2026-09-27T12:02:00Z-333333cccccc",
+    }
+    assert consumer.is_complete_generation(empty)
+    assert parquet_io.parquet_bytes_to_table(
+        empty.workflows, parquet_io.WORKFLOWS_SCHEMA
+    ).num_rows == 0
+    assert parquet_io.parquet_bytes_to_table(
+        empty.runs, parquet_io.RUNS_SCHEMA
+    ).num_rows == 0
+
+    legacy = _materialize(fixtures["pre_generation_id"])
+    assert consumer.generation_ids(legacy) == {
+        "meta": "2026-09-27T11:55:00Z-666666ffffff",
+        "workflows": None,
+        "runs": None,
+    }
+    assert consumer.is_complete_generation(legacy) is False
+
+
 def test_torn_fixture_retains_the_last_complete_generation(fixtures):
     complete = _materialize(fixtures["complete"])
     torn = _materialize(fixtures["torn"])

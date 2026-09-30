@@ -49,8 +49,10 @@ All three objects of a cycle carry the same id:
   metadata, not in the rows, so **an empty snapshot is still a generation**:
   a zero-row snapshot can be paired with its `meta.json` exactly like a full
   one. Reading the id needs only the Parquet footer
-  (`pyarrow.parquet.read_schema`, or the equivalent footer-only read on any
-  other client), not the whole object.
+  (`pyarrow.parquet.read_metadata(...).metadata`, or the equivalent
+  footer-only read on any other client), not the whole object. `read_schema`
+  returns the schema and is not the API for reading file-level key-value
+  metadata.
 - `meta.json` — as a top-level `"generation_id"` field.
 
 Objects from the release before generation identity was introduced are a
