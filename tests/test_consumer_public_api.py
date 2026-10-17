@@ -198,6 +198,171 @@ def test_read_generation_reports_no_publication_when_bootstrapping(monkeypatch):
     assert selected.publication is None
 
 
+RESULT_READERS = [
+    pytest.param(consumer.read_generation, {"with_status": True}, id="with_status"),
+    pytest.param(consumer.read_generation_result, {}, id="read_generation_result"),
+    pytest.param(consumer.load_generation_result, {}, id="load_generation_result"),
+    pytest.param(consumer.read_publication_result, {}, id="read_publication_result"),
+]
+
+
+@pytest.mark.parametrize("reader, options", RESULT_READERS)
+def test_result_entry_points_select_a_fresh_publication(reader, options, monkeypatch):
+    meta = _meta()
+    workflows, runs = _published_bytes()
+    objects = _stored_objects(meta, workflows, runs)
+    previous = consumer.Publication(
+        meta={"previous": True}, workflows=b"old-w", runs=b"old-r"
+    )
+    monkeypatch.setattr(
+        consumer.s3io, "download_bytes", lambda _s3, _bucket, key: objects.get(key)
+    )
+
+    result = reader(object(), "bucket", "argo/data", previous, **options)
+
+    assert type(result) is consumer.PublicationResult
+    assert result.status is consumer.PublicationStatus.FRESH
+    assert result.reason is None
+    assert type(result.publication) is consumer.Publication
+    assert result.publication.meta == meta
+    assert result.publication.workflows is workflows
+    assert result.publication.runs is runs
+    assert previous.meta == {"previous": True}
+    assert previous.workflows == b"old-w"
+    assert previous.runs == b"old-r"
+
+
+@pytest.mark.parametrize("reader, options", RESULT_READERS)
+@pytest.mark.parametrize("has_previous", [False, True], ids=["bootstrap", "fallback"])
+@pytest.mark.parametrize(
+    "scenario, reason, expected_downloads",
+    [
+        pytest.param(
+            "missing_marker", consumer.PublicationReason.MISSING, 1, id="missing-marker"
+        ),
+        pytest.param(
+            "invalid_json", consumer.PublicationReason.INVALID, 1, id="invalid-json"
+        ),
+        pytest.param(
+            "invalid_meta", consumer.PublicationReason.INVALID, 1, id="invalid-schema"
+        ),
+        pytest.param("stale", consumer.PublicationReason.STALE, 1, id="stale-marker"),
+        pytest.param(
+            "missing_workflows",
+            consumer.PublicationReason.INCOMPLETE,
+            3,
+            id="missing-workflows",
+        ),
+        pytest.param(
+            "missing_runs", consumer.PublicationReason.INCOMPLETE, 3, id="missing-runs"
+        ),
+        pytest.param(
+            "unreadable_footer",
+            consumer.PublicationReason.INCOMPLETE,
+            3,
+            id="unreadable-footer",
+        ),
+        pytest.param(
+            "unstamped_footer",
+            consumer.PublicationReason.INCOMPLETE,
+            3,
+            id="unstamped-footer",
+        ),
+        pytest.param("torn", consumer.PublicationReason.TORN, 3, id="torn-identities"),
+    ],
+)
+def test_result_entry_points_report_rejected_candidates(
+    reader, options, has_previous, scenario, reason, expected_downloads, monkeypatch
+):
+    meta = _meta()
+    workflows, runs = _published_bytes()
+    objects = _stored_objects(meta, workflows, runs)
+    if scenario == "missing_marker":
+        del objects["argo/data/meta.json"]
+    elif scenario == "invalid_json":
+        objects["argo/data/meta.json"] = b"{"
+    elif scenario == "invalid_meta":
+        del meta["generation_id"]
+        objects["argo/data/meta.json"] = json.dumps(meta).encode()
+    elif scenario == "stale":
+        meta["generated_at"] = "2026-09-27T11:00:00Z"
+        meta["generation_id"] = "2026-09-27T11:00:00Z-222222bbbbbb"
+        objects["argo/data/meta.json"] = json.dumps(meta).encode()
+    elif scenario == "missing_workflows":
+        del objects["argo/data/workflows.parquet"]
+    elif scenario == "missing_runs":
+        del objects["argo/data/runs.parquet"]
+    elif scenario == "unreadable_footer":
+        objects["argo/data/workflows.parquet"] = b"not parquet"
+    elif scenario == "unstamped_footer":
+        objects["argo/data/runs.parquet"] = parquet_io.table_to_parquet_bytes(
+            [], parquet_io.RUNS_SCHEMA
+        )
+    elif scenario == "torn":
+        objects["argo/data/runs.parquet"] = parquet_io.table_to_parquet_bytes(
+            [], parquet_io.RUNS_SCHEMA, f"{GENERATED_AT}-222222bbbbbb"
+        )
+
+    previous = consumer.Publication(
+        meta={"previous": True}, workflows=b"old-w", runs=b"old-r"
+    )
+    calls = []
+
+    def download(_s3, _bucket, key):
+        calls.append(key)
+        return objects.get(key)
+
+    monkeypatch.setattr(consumer.s3io, "download_bytes", download)
+    result = reader(
+        object(),
+        "bucket",
+        "argo/data",
+        previous if has_previous else None,
+        max_cycle_seconds=60,
+        now=datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc),
+        **options,
+    )
+
+    assert type(result) is consumer.PublicationResult
+    assert result.reason is reason
+    if has_previous:
+        assert result.status is consumer.PublicationStatus.FALLBACK
+        assert result.publication is previous
+    else:
+        assert result.status is consumer.PublicationStatus.NO_PUBLICATION
+        assert result.publication is None
+    assert calls == [
+        "argo/data/meta.json",
+        *(
+            ["argo/data/workflows.parquet", "argo/data/runs.parquet"]
+            if expected_downloads == 3
+            else []
+        ),
+    ]
+    legacy = consumer.read_generation(
+        object(),
+        "bucket",
+        "argo/data",
+        previous if has_previous else None,
+        max_cycle_seconds=60,
+        now=datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc),
+    )
+    assert legacy is (previous if has_previous else None)
+    assert previous.meta == {"previous": True}
+    assert previous.workflows == b"old-w"
+    assert previous.runs == b"old-r"
+
+
+def test_result_aliases_and_unavailable_status_alias():
+    assert consumer.load_generation_result is consumer.read_generation_result
+    assert consumer.read_publication_result is consumer.read_generation_result
+    assert (
+        consumer.PublicationStatus.UNAVAILABLE
+        is consumer.PublicationStatus.NO_PUBLICATION
+    )
+    assert consumer.PublicationStatus.UNAVAILABLE.value == "no-publication"
+
+
 def test_public_loaders_are_aliases_of_read_generation():
     assert consumer.load_generation is consumer.read_generation
     assert consumer.read_publication is consumer.read_generation
@@ -212,7 +377,9 @@ def test_public_loaders_are_aliases_of_read_generation():
     ],
 )
 def test_public_loaders_preserve_bootstrap_none_and_last_complete(loader, monkeypatch):
-    previous = consumer.Publication(meta={"previous": True}, workflows=b"old", runs=b"old")
+    previous = consumer.Publication(
+        meta={"previous": True}, workflows=b"old", runs=b"old"
+    )
     calls = []
 
     def download(_s3, _bucket, key):
@@ -247,7 +414,9 @@ def test_missing_data_is_none_or_the_unchanged_previous_publication(monkeypatch)
     assert consumer.read_generation(object(), "bucket", "argo/data") is None
 
     previous = consumer.Publication(meta=meta, workflows=workflows, runs=runs)
-    assert consumer.read_generation(object(), "bucket", "argo/data", previous) is previous
+    assert (
+        consumer.read_generation(object(), "bucket", "argo/data", previous) is previous
+    )
     assert calls == [
         "argo/data/meta.json",
         "argo/data/workflows.parquet",
@@ -458,7 +627,9 @@ def test_documented_historical_helpers_and_short_aliases_use_the_run_ledger():
     assert metrics["phase_counts"] == consumer.historical_phase_counts(publication)
     assert metrics["rates"] == consumer.historical_rates(publication)
     assert metrics["trends"] == consumer.historical_trends(publication)
-    assert metrics["duration_history"] == consumer.historical_duration_history(publication)
+    assert metrics["duration_history"] == consumer.historical_duration_history(
+        publication
+    )
     assert metrics["failure_counts"] == consumer.historical_failure_counts(publication)
     assert metrics["failure_fingerprint_counts"] == consumer.historical_failure_counts(
         publication, field="failure_fingerprint"
