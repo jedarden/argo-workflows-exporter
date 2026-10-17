@@ -51,8 +51,10 @@ sensor, which submits that workflow. The workflow:
    changed `VERSION`, that value is used. Otherwise the workflow increments
    the patch component, commits the new `VERSION` with the CI identity, and
    pushes that commit back to `main`;
-3. builds with Kaniko using the resolved version as both the image tag and the
-   `VERSION` build argument.
+3. builds with the pinned BuildKit client using the resolved version as both
+   the immutable image tag and the `VERSION` build argument. The build context
+   is the resolved source commit, including a CI-authored `VERSION` bump when
+   one was required.
 
 The auto-version commit is excluded from the build sensor, so it does not
 create an endless build loop. Wait for the workflow to pass and confirm the

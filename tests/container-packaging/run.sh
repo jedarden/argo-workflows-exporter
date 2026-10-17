@@ -157,9 +157,19 @@ assert "docker-hub-registry" in pull_secrets, pull_secrets
 assert workflow["kind"] == "WorkflowTemplate"
 workflow_text = Path(workflow_path).read_text(encoding="utf-8")
 assert "python -m pytest tests/ -q" in workflow_text
-assert "--dockerfile=Dockerfile" in workflow_text
-assert "--destination=ronaldraygun/argo-workflows-exporter:{{inputs.parameters.version}}" in workflow_text
-assert not re.search(r"--destination=[^\s]+:latest(?:\s|$)", workflow_text)
+templates = {template["name"]: template for template in workflow["spec"]["templates"]}
+build = templates["docker-build"]
+build_source = build["container"]["args"][0]
+assert build["metadata"]["labels"]["ci.ardenone.com/buildkit-client"] == "true"
+assert "--frontend=dockerfile.v0" in build_source
+assert '--opt filename=Dockerfile' in build_source
+assert '--opt "build-arg:VERSION={{inputs.parameters.version}}"' in build_source
+assert (
+    'type=image,name=ronaldraygun/argo-workflows-exporter:'
+    '{{inputs.parameters.version}},push=true'
+) in build_source
+assert "#{{inputs.parameters.source-sha}}" in build_source
+assert not re.search(r"argo-workflows-exporter:[^\s]+latest", workflow_text)
 
 assert "HEALTH_PORT=8080" in dockerfile
 assert re.search(r"^EXPOSE 8080$", dockerfile, re.MULTILINE)

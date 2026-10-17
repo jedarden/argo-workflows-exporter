@@ -52,6 +52,17 @@ spec:
         command: [sh]
         source: |
           set -e
+          cat > /tmp/git-askpass <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' git ;;
+            *Password*) printf '%s\n' "$GIT_AUTH_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          EOF
+          chmod 700 /tmp/git-askpass
+          export GIT_ASKPASS=/tmp/git-askpass
+          export GIT_TERMINAL_PROMPT=0
           git clone --branch {{workflow.parameters.branch}} \
             "https://git.ardenone.com/{{workflow.parameters.git-repo}}.git" \
             /tmp/repo
@@ -64,6 +75,10 @@ spec:
             echo "VERSION changed in commit — using ${VERSION}"
           else
             CURRENT=$(cat VERSION | tr -d '[:space:]')
+            if ! printf '%s\n' "$CURRENT" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+              echo "VERSION is not a semver release: ${CURRENT}" >&2
+              exit 1
+            fi
             MAJOR=$(echo "$CURRENT" | cut -d. -f1)
             MINOR=$(echo "$CURRENT" | cut -d. -f2)
             PATCH=$(echo "$CURRENT" | cut -d. -f3)
@@ -75,17 +90,36 @@ spec:
             git config user.name "Argo Workflows CI"
             git add VERSION
             git commit -m "ci: auto-bump version to ${VERSION}"
+            PUSHED=0
             for i in 1 2 3; do
-              git pull --rebase && git push && break
+              if git pull --rebase && git push; then
+                PUSHED=1
+                break
+              fi
               echo "Push attempt $i failed, retrying..."
-              sleep 3
+              [ "$i" -eq 3 ] || sleep 3
             done
+            if [ "$PUSHED" -ne 1 ]; then
+              echo "Unable to push CI version bump after 3 attempts" >&2
+              exit 1
+            fi
+          fi
+
+          if ! printf '%s\n' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "VERSION is not a semver release: ${VERSION}" >&2
+            exit 1
           fi
 
           echo "$VERSION" > /tmp/version
           git rev-parse HEAD > /tmp/source-sha
           grep -Eq '^[0-9a-f]{40}$' /tmp/source-sha
           echo "Building version: ${VERSION}"
+      env:
+        - name: GIT_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: forgejo-webhook-token
+              key: token
       outputs:
         parameters:
           - name: version
