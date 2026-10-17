@@ -766,6 +766,12 @@ def test_successful_zero_row_cycle_publishes_a_new_generation(monkeypatch):
     cfg = _config([Cluster(name="ci"), Cluster(name="staging")])
     _list(monkeypatch, {"ci": ([], True), "staging": ([], True)})
     monkeypatch.setattr(main, "_now", lambda: generated_at)
+    # Retention must not be measured against the real clock: the stored
+    # ledger's last_seen_at values are fixture dates, and a wall-clock cutoff
+    # eventually passes them and trims history the cycle is expected to keep.
+    monkeypatch.setattr(
+        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
+    )
 
     s3 = _RecordingS3(_prior_generation())
     before = dict(s3.objects)
@@ -1642,6 +1648,11 @@ def test_generated_at_is_captured_at_cycle_start_for_a_slow_cycle(monkeypatch):
 def test_first_cycle_without_runs_parquet_publishes_a_pairable_generation(monkeypatch):
     """A missing ledger is the normal empty state on the first cycle."""
     s3 = _RecordingS3()
+    # Retention must not be measured against the real clock: see
+    # test_successful_zero_row_cycle_publishes_a_new_generation.
+    monkeypatch.setattr(
+        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
+    )
 
     assert _one_cluster_state(monkeypatch, s3) is True
 
@@ -1973,6 +1984,11 @@ def test_two_cycles_in_the_same_second_get_distinct_generation_ids(
     when the two snapshots contain the same rows, including empty snapshots.
     """
     monkeypatch.setattr(main, "_now", lambda: _GENERATED_AT)
+    # Retention must not be measured against the real clock: see
+    # test_successful_zero_row_cycle_publishes_a_new_generation.
+    monkeypatch.setattr(
+        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
+    )
     suffixes = iter(("a" * 32, "b" * 32))
     monkeypatch.setattr(
         main.uuid,
@@ -2058,6 +2074,11 @@ def test_failed_runs_upload_leaves_a_detectably_torn_generation(monkeypatch):
 def test_failed_meta_upload_leaves_both_parquets_on_the_new_generation(monkeypatch):
     s3 = _FailNthPut(_prior_generation(), fail_on_put=3)
     meta_before = s3.objects["argo/data/meta.json"]
+    # Retention must not be measured against the real clock: see
+    # test_successful_zero_row_cycle_publishes_a_new_generation.
+    monkeypatch.setattr(
+        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
+    )
 
     with pytest.raises(ClientError):
         _one_cluster_state(monkeypatch, s3)
@@ -2230,6 +2251,11 @@ def test_next_successful_cycle_republishes_a_torn_generation_as_one(monkeypatch)
     and republishes all three objects under a fresh id, making the stored set
     readable again without operator action."""
     s3 = _FailNthPut(_prior_generation(), fail_on_put=3)
+    # Retention must not be measured against the real clock: see
+    # test_successful_zero_row_cycle_publishes_a_new_generation.
+    monkeypatch.setattr(
+        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
+    )
     with pytest.raises(ClientError):
         _one_cluster_state(monkeypatch, s3)
     torn_meta = json.loads(s3.objects["argo/data/meta.json"])
@@ -2260,6 +2286,11 @@ def test_retry_after_each_partial_publication_preserves_commit_marker_and_ledger
     s3 = _FailNthPut(_prior_generation(), fail_on_put=fail_on_put)
     old_meta_bytes = s3.objects["argo/data/meta.json"]
     old_generation = json.loads(old_meta_bytes)["generation_id"]
+    # Retention must not be measured against the real clock: see
+    # test_successful_zero_row_cycle_publishes_a_new_generation.
+    monkeypatch.setattr(
+        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
+    )
 
     with pytest.raises(ClientError) as raised:
         _one_cluster_state(monkeypatch, s3)
