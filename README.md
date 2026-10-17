@@ -2,7 +2,11 @@
 
 Polls the Kubernetes API of any number of clusters for Argo `Workflow`
 objects and writes their state as Parquet to any S3-compatible bucket. Runs
-as a long-lived loop — polls on an interval and re-uploads every cycle.
+as a long-lived loop — polls on an interval and re-uploads each successful
+cycle. Publication is conditional: a cycle that fails before its uploads
+writes nothing, one that fails mid-upload can leave a partial set, and only
+a successful `meta.json` upload commits a new generation (see
+[Output](#output)).
 
 Nothing about any particular installation is hardcoded: the clusters it polls,
 their namespaces, and any remote proxy URLs are supplied at deploy time
@@ -48,17 +52,25 @@ authoritative status for that remaining work.
 
 ## Output
 
-Three objects are written under `DEST_S3_PREFIX` (default `argo/data`) after
-every cycle in which at least one cluster completes its listing:
+Three objects are written under `DEST_S3_PREFIX` (default `argo/data`), but
+only when a cycle gets all the way through: at least one cluster listing
+must complete, any read or compute failure after that gate issues no PUT at
+all, and the publish phase can itself fail mid-upload, leaving none or only
+part of the set written. A successful `meta.json` upload is the commit point
+of a cycle — until it lands, the stored `meta.json` still names the previous
+generation, so a partially uploaded set never becomes the current one. The
+three objects:
 
 - `workflows.parquet` — one row per `Workflow` object that currently exists in
-  each cluster whose listing completed, overwritten each cycle
+  each cluster whose listing completed, overwritten by every cycle that
+  publishes
 - `runs.parquet` — the ledger: one row per run ever observed, updated in
   place as a run progresses and retained `RUN_RETENTION_DAYS` past the last
   time it was seen
 - `meta.json` — provenance sidecar: version, generation timestamp, per-cluster
-  reachability, and row counts. Written **last**, as the commit marker for
-  the cycle.
+  reachability, and row counts. Written **last**: its successful upload is
+  the commit point of the cycle — everything it describes is already in
+  place when it lands.
 
 S3 has no multi-object write, so a cycle's three objects are not published
 atomically. Every object of a cycle carries the same `generation_id` — in
