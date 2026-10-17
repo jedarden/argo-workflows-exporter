@@ -70,9 +70,10 @@ tests/container-packaging/run.sh
 ```
 
 This validates the Deployment and ConfigMap wiring, the S3 secret references,
-the probes, the build workflow, and the image's startup health check. It also
-builds the image locally and verifies its initial `/health` response. Set
-`DECLARATIVE_CONFIG_DIR` if the sibling checkout is not at
+the probes, the build workflow, the sensor exclusion that keeps the automatic
+VERSION-bump commit from retriggering a build, and the image's startup health
+check. It also builds the image locally and verifies its initial `/health`
+response. Set `DECLARATIVE_CONFIG_DIR` if the sibling checkout is not at
 `$HOME/declarative-config`.
 
 ## Runtime configuration

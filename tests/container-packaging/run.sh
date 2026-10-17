@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Executable packaging and deployment contract for argo-workflows-exporter.
 #
-# The Deployment and build WorkflowTemplate are GitOps-owned by the sibling
-# declarative-config checkout, so this test reads those exact files instead of
-# copying a second, drift-prone manifest into this repository. It validates the
-# manifest wiring and then builds the pinned image from this checkout, starts it
-# with the required runtime environment, and checks the documented health
-# endpoint from inside the container.
+# The Deployment, build WorkflowTemplate, and build Sensor are GitOps-owned by
+# the sibling declarative-config checkout, so this test reads those exact files
+# instead of copying a second, drift-prone manifest into this repository. It
+# validates the manifest wiring (including the sensor-exclusion contract that
+# keeps automatic VERSION-bump commits from retriggering builds) and then builds
+# the pinned image from this checkout, starts it with the required runtime
+# environment, and checks the documented health endpoint from inside the
+# container.
 
 set -euo pipefail
 
@@ -16,6 +18,7 @@ CONFIG_ROOT="${DECLARATIVE_CONFIG_DIR:-$HOME/declarative-config}"
 MANIFEST="${ARGO_WORKFLOWS_EXPORTER_MANIFEST:-$CONFIG_ROOT/k8s/ardenone-cluster/argo-workflows-exporter/deployment.yml}"
 CONFIGMAP="${ARGO_WORKFLOWS_EXPORTER_CONFIGMAP:-$(dirname "$MANIFEST")/configmap.yml}"
 BUILD_WORKFLOW="${ARGO_WORKFLOWS_EXPORTER_BUILD_WORKFLOW:-$CONFIG_ROOT/k8s/iad-ci/argo-workflows/argo-workflows-exporter-build-workflowtemplate.yml}"
+SENSOR="${ARGO_WORKFLOWS_EXPORTER_SENSOR:-$CONFIG_ROOT/k8s/iad-ci/argo-events/argo-workflows-exporter-sensor.yml}"
 
 for tool in docker python3; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -28,7 +31,7 @@ python3 -c 'import yaml' >/dev/null 2>&1 || {
     exit 1
 }
 
-for file in "$MANIFEST" "$CONFIGMAP" "$BUILD_WORKFLOW"; do
+for file in "$MANIFEST" "$CONFIGMAP" "$BUILD_WORKFLOW" "$SENSOR"; do
     if [ ! -f "$file" ]; then
         echo "FAIL: required GitOps file not found: $file" >&2
         echo "       set DECLARATIVE_CONFIG_DIR or the specific *_MANIFEST override" >&2
@@ -58,7 +61,7 @@ echo "Build workflow: $BUILD_WORKFLOW"
 # Parse all YAML with duplicate-key detection. PyYAML's normal safe_load keeps
 # the last duplicate key, which can make a malformed manifest appear valid.
 PINNED_IMAGE_FILE="$WORK/pinned-image"
-python3 - "$MANIFEST" "$CONFIGMAP" "$BUILD_WORKFLOW" "$REPO_ROOT/Dockerfile" "$PINNED_IMAGE_FILE" <<'PY'
+python3 - "$MANIFEST" "$CONFIGMAP" "$BUILD_WORKFLOW" "$SENSOR" "$REPO_ROOT/Dockerfile" "$PINNED_IMAGE_FILE" <<'PY'
 import json
 import re
 import sys
@@ -92,10 +95,11 @@ def load(path):
         return yaml.load(handle, Loader=StrictLoader)
 
 
-deployment_path, configmap_path, workflow_path, dockerfile_path, image_path = sys.argv[1:]
+deployment_path, configmap_path, workflow_path, sensor_path, dockerfile_path, image_path = sys.argv[1:]
 deployment = load(deployment_path)
 configmap = load(configmap_path)
 workflow = load(workflow_path)
+sensor = load(sensor_path)
 dockerfile = Path(dockerfile_path).read_text(encoding="utf-8")
 
 assert deployment["apiVersion"] == "apps/v1"
@@ -171,6 +175,36 @@ assert (
 assert "#{{inputs.parameters.source-sha}}" in build_source
 assert not re.search(r"argo-workflows-exporter:[^\s]+latest", workflow_text)
 
+# Loop-suppression contract, checked against the live GitOps files: the
+# resolver must author the auto-bump commit as exactly the identity the build
+# sensor excludes. When these two sides drift (they did: the template wrote
+# as "jedarden" while the sensor excluded only "Argo Workflows CI"), every
+# auto-bump push retriggered one extra build per release.
+resolve_source = templates["resolve-version"]["script"]["source"]
+dependency = sensor["spec"]["dependencies"][0]
+author_filter = next(
+    item
+    for item in dependency["filters"]["data"]
+    if item["path"] == "body.head_commit.author.name"
+)
+excluded_authors = author_filter["value"]
+assert author_filter["comparator"] == "!=", author_filter
+writeback_match = re.search(
+    r'git config user\.name "([^"]+)"', resolve_source
+)
+assert writeback_match, "resolver must set a git identity for the bump commit"
+writeback_author = writeback_match.group(1)
+assert writeback_author in excluded_authors, (
+    f"resolver writes the auto-bump as {writeback_author!r} but the sensor "
+    f"excludes only {excluded_authors!r}: every release re-triggers a build"
+)
+assert "Unable to push CI version bump after 3 attempts" in resolve_source, (
+    "resolver must fail the workflow when the bump commit never reaches main"
+)
+assert "VERSION is not a semver release" in resolve_source, (
+    "resolver must refuse non-semver VERSION values before tagging an image"
+)
+
 assert "HEALTH_PORT=8080" in dockerfile
 assert re.search(r"^EXPOSE 8080$", dockerfile, re.MULTILINE)
 assert 'http://localhost:${HEALTH_PORT}/health' in dockerfile
@@ -181,6 +215,7 @@ print("ok: Deployment enforces a single writer with one replica and Recreate upd
 print("ok: ConfigMap and dashboard-s3-credentials supply the required runtime environment")
 print("ok: health port 8080 and /health liveness/readiness probes are wired")
 print("ok: build WorkflowTemplate tests the checkout and publishes a semver image")
+print("ok: auto-bump author matches the build sensor exclusion, so no build loop")
 print("ok: Dockerfile exposes HEALTH_PORT and its documented health check")
 with open(image_path, "w", encoding="utf-8") as handle:
     handle.write(image)
