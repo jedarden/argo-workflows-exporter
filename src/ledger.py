@@ -24,8 +24,19 @@ from .failure_taxonomy import failure_columns
 log = logging.getLogger(__name__)
 
 
-def _cutoff(retention_days: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=retention_days)).strftime(
+def _cutoff(retention_days: int, generated_at: str) -> str:
+    """Return the retention boundary for the cycle being merged.
+
+    ``generated_at`` is captured once at cycle start and is the timestamp
+    applied to every observation in that cycle. Deriving the cutoff from the
+    same instant keeps retention decisions consistent with those timestamps;
+    using the wall clock here could expire fixture or stored rows based on
+    work done after the cycle started.
+    """
+    cycle_time = datetime.strptime(generated_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+    return (cycle_time - timedelta(days=retention_days)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
 
@@ -88,7 +99,7 @@ def merge(existing_rows, observed_rows, generated_at: str, retention_days: int):
         by_key[key] = row
         updated += 1
 
-    cutoff = _cutoff(retention_days)
+    cutoff = _cutoff(retention_days, generated_at)
     kept = [r for r in by_key.values() if (r.get("last_seen_at") or "") >= cutoff]
     dropped = len(by_key) - len(kept)
     if dropped:

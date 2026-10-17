@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.ledger import merge
+from src.ledger import _cutoff, merge
 from src.workflows import normalize_failure, to_row
 
 
@@ -136,6 +136,19 @@ def test_rows_expire_a_retention_window_after_they_were_last_seen():
     assert [r["uid"] for r in kept] == ["new"]
 
 
+def test_retention_cutoff_is_derived_from_the_cycle_instant():
+    assert _cutoff(7, "2026-09-23T12:00:00Z") == "2026-09-16T12:00:00Z"
+
+    boundary = {
+        "uid": "boundary",
+        "phase": "Succeeded",
+        "first_seen_at": "2026-09-01T12:00:00Z",
+        "last_seen_at": "2026-09-16T12:00:00Z",
+    }
+    [kept] = merge([boundary], [], "2026-09-23T12:00:00Z", 7)
+    assert kept == boundary
+
+
 @pytest.mark.parametrize("phase", ["Running", "Succeeded"])
 @pytest.mark.parametrize(
     ("last_seen_at", "retained"),
@@ -147,7 +160,10 @@ def test_rows_expire_a_retention_window_after_they_were_last_seen():
 def test_retention_is_measured_from_last_observation_at_the_cutoff(
     monkeypatch, phase, last_seen_at, retained
 ):
-    monkeypatch.setattr("src.ledger._cutoff", lambda retention_days: "2026-09-16T12:00:00Z")
+    monkeypatch.setattr(
+        "src.ledger._cutoff",
+        lambda _retention_days, _generated_at: "2026-09-16T12:00:00Z",
+    )
     old_run = {
         "uid": "old-run",
         "cluster": "ci",
@@ -278,7 +294,10 @@ def test_retention_is_decided_per_cluster_and_uid():
 def test_removed_cluster_rows_follow_natural_retention(monkeypatch):
     """Stopping observations for a removed config entry does not purge history early."""
     cutoff = "2026-09-16T12:00:00Z"
-    monkeypatch.setattr("src.ledger._cutoff", lambda retention_days: cutoff)
+    monkeypatch.setattr(
+        "src.ledger._cutoff",
+        lambda _retention_days, _generated_at: cutoff,
+    )
     removed_retained = {
         "uid": "removed-retained",
         "cluster": "removed",

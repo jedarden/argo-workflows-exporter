@@ -202,7 +202,11 @@ def _list(monkeypatch, responses):
 
 def test_restart_rehydrates_ledger_and_tracks_running_to_terminal_state(monkeypatch):
     cfg = _config([Cluster(name="ci")])
-    monkeypatch.setattr(ledger, "_cutoff", lambda retention_days: "2026-09-16T12:00:00Z")
+    monkeypatch.setattr(
+        ledger,
+        "_cutoff",
+        lambda _retention_days, _generated_at: "2026-09-16T12:00:00Z",
+    )
 
     monkeypatch.setattr(main, "_now", lambda: "2026-09-23T12:00:00Z")
     _list(
@@ -371,7 +375,11 @@ def test_successful_multi_cluster_cycle_publishes_one_readable_generation(monkey
         http_timeout_seconds=17,
     )
     monkeypatch.setattr(main, "_now", lambda: generated_at)
-    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z")
+    monkeypatch.setattr(
+        ledger,
+        "_cutoff",
+        lambda _retention_days, _generated_at: "2026-09-16T19:00:00Z",
+    )
 
     local_calls = []
     local_pages = {
@@ -581,7 +589,9 @@ def test_observed_workflow_has_shared_column_parity_across_published_outputs(
     cfg = _config([Cluster(name="ci")])
     monkeypatch.setattr(main, "_now", lambda: generated_at)
     monkeypatch.setattr(
-        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
+        ledger,
+        "_cutoff",
+        lambda _retention_days, _generated_at: "2026-09-16T19:00:00Z",
     )
     _list(monkeypatch, {"ci": ([observed], True)})
 
@@ -650,7 +660,9 @@ def test_progress_fixtures_reach_both_published_parquet_outputs(monkeypatch):
     cfg = _config([Cluster(name="ci")])
     monkeypatch.setattr(main, "_now", lambda: generated_at)
     monkeypatch.setattr(
-        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
+        ledger,
+        "_cutoff",
+        lambda _retention_days, _generated_at: "2026-09-16T19:00:00Z",
     )
     _list(monkeypatch, {"ci": (observed, True)})
 
@@ -766,12 +778,6 @@ def test_successful_zero_row_cycle_publishes_a_new_generation(monkeypatch):
     cfg = _config([Cluster(name="ci"), Cluster(name="staging")])
     _list(monkeypatch, {"ci": ([], True), "staging": ([], True)})
     monkeypatch.setattr(main, "_now", lambda: generated_at)
-    # Retention must not be measured against the real clock: the stored
-    # ledger's last_seen_at values are fixture dates, and a wall-clock cutoff
-    # eventually passes them and trims history the cycle is expected to keep.
-    monkeypatch.setattr(
-        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
-    )
 
     s3 = _RecordingS3(_prior_generation())
     before = dict(s3.objects)
@@ -880,7 +886,11 @@ def test_paginated_request_timeout_isolated_from_successful_cluster(monkeypatch)
         page_size=1,
     )
     monkeypatch.setattr(main, "_now", lambda: generated_at)
-    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-20T00:00:00Z")
+    monkeypatch.setattr(
+        ledger,
+        "_cutoff",
+        lambda _retention_days, _generated_at: "2026-09-20T00:00:00Z",
+    )
 
     pages = {
         "http://healthy.example": {
@@ -1006,7 +1016,9 @@ def test_mixed_success_replaces_snapshot_but_retains_failed_cluster_ledger(
     previous_generation_id = f"{previous_generated_at}-000000aaaaaa"
     monkeypatch.setattr(main, "_now", lambda: generated_at)
     monkeypatch.setattr(
-        ledger, "_cutoff", lambda _retention_days: "2026-09-20T00:00:00Z"
+        ledger,
+        "_cutoff",
+        lambda _retention_days, _generated_at: "2026-09-20T00:00:00Z",
     )
 
     previous_snapshot = [
@@ -1220,7 +1232,9 @@ def test_unreachable_cluster_ledger_rows_follow_last_seen_retention(monkeypatch)
     generated_at = "2026-09-27T12:00:00Z"
     cutoff = "2026-09-20T00:00:00Z"
     monkeypatch.setattr(main, "_now", lambda: generated_at)
-    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: cutoff)
+    monkeypatch.setattr(
+        ledger, "_cutoff", lambda _retention_days, _generated_at: cutoff
+    )
     _list(
         monkeypatch,
         {
@@ -1310,7 +1324,9 @@ def test_removed_cluster_ledger_rows_are_kept_until_natural_expiry(monkeypatch):
     generated_at = "2026-09-27T12:00:00Z"
     cutoff = "2026-09-20T00:00:00Z"
     monkeypatch.setattr(main, "_now", lambda: generated_at)
-    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: cutoff)
+    monkeypatch.setattr(
+        ledger, "_cutoff", lambda _retention_days, _generated_at: cutoff
+    )
     _list(monkeypatch, {"healthy": ([_workflow("healthy-current", "healthy")], True)})
 
     prior_runs = [
@@ -1356,7 +1372,11 @@ def test_removed_cluster_ledger_rows_are_kept_until_natural_expiry(monkeypatch):
 def test_renamed_cluster_accumulates_new_identity_and_keeps_old_ledger_rows(monkeypatch):
     old_generated_at = "2026-09-27T12:00:00Z"
     new_generated_at = "2026-09-27T12:05:00Z"
-    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-20T00:00:00Z")
+    monkeypatch.setattr(
+        ledger,
+        "_cutoff",
+        lambda _retention_days, _generated_at: "2026-09-20T00:00:00Z",
+    )
     s3 = _MemoryS3()
 
     monkeypatch.setattr(main, "_now", lambda: old_generated_at)
@@ -1418,7 +1438,11 @@ def test_cycle_reuses_generationless_runs_fixture_and_publishes_one_fresh_genera
     """A footerless ledger is reusable history, not a publication identity."""
     generated_at = "2026-09-27T12:00:00Z"
     monkeypatch.setattr(main, "_now", lambda: generated_at)
-    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-01T00:00:00Z")
+    monkeypatch.setattr(
+        ledger,
+        "_cutoff",
+        lambda _retention_days, _generated_at: "2026-09-01T00:00:00Z",
+    )
     _list(
         monkeypatch,
         {
@@ -1482,7 +1506,11 @@ def test_failed_cycle_after_generationless_upgrade_preserves_prior_publication(
     """A failed retry cannot replace the complete publication made by the upgrade."""
     generated_at = "2026-09-27T12:00:00Z"
     monkeypatch.setattr(main, "_now", lambda: generated_at)
-    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-01T00:00:00Z")
+    monkeypatch.setattr(
+        ledger,
+        "_cutoff",
+        lambda _retention_days, _generated_at: "2026-09-01T00:00:00Z",
+    )
     _list(monkeypatch, {"ci": ([_workflow("wf-new", "new-build-abcde")], True)})
     upgraded = _MemoryS3(
         {
@@ -1525,7 +1553,11 @@ def test_cycle_upgrades_a_legacy_runs_fixture_and_publishes_current_schema(monke
     )
     generated_at = "2026-09-27T12:00:00Z"
     monkeypatch.setattr(main, "_now", lambda: generated_at)
-    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-01T00:00:00Z")
+    monkeypatch.setattr(
+        ledger,
+        "_cutoff",
+        lambda _retention_days, _generated_at: "2026-09-01T00:00:00Z",
+    )
     _list(
         monkeypatch,
         {
@@ -1648,11 +1680,6 @@ def test_generated_at_is_captured_at_cycle_start_for_a_slow_cycle(monkeypatch):
 def test_first_cycle_without_runs_parquet_publishes_a_pairable_generation(monkeypatch):
     """A missing ledger is the normal empty state on the first cycle."""
     s3 = _RecordingS3()
-    # Retention must not be measured against the real clock: see
-    # test_successful_zero_row_cycle_publishes_a_new_generation.
-    monkeypatch.setattr(
-        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
-    )
 
     assert _one_cluster_state(monkeypatch, s3) is True
 
@@ -1737,7 +1764,11 @@ def test_malformed_cluster_has_no_partial_rows_or_ledger_updates(
     """
     generated_at = "2026-09-27T12:00:00Z"
     monkeypatch.setattr(main, "_now", lambda: generated_at)
-    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: "2026-09-20T00:00:00Z")
+    monkeypatch.setattr(
+        ledger,
+        "_cutoff",
+        lambda _retention_days, _generated_at: "2026-09-20T00:00:00Z",
+    )
 
     malformed = _workflow("wf-broken-new", "broken-new")
     if malformation.startswith("missing-"):
@@ -1891,7 +1922,9 @@ def test_pre_publish_cycle_failures_preserve_and_then_recover(
     s3 = _MemoryS3(_prior_generation())
     before = dict(s3.objects)
     _list(monkeypatch, {"ci": ([_workflow("wf-new", "wf-new")], True)})
-    monkeypatch.setattr(ledger, "_cutoff", lambda _retention_days: _GENERATED_AT)
+    monkeypatch.setattr(
+        ledger, "_cutoff", lambda _retention_days, _generated_at: _GENERATED_AT
+    )
     enabled = True
 
     if failure == "collection":
@@ -1984,11 +2017,6 @@ def test_two_cycles_in_the_same_second_get_distinct_generation_ids(
     when the two snapshots contain the same rows, including empty snapshots.
     """
     monkeypatch.setattr(main, "_now", lambda: _GENERATED_AT)
-    # Retention must not be measured against the real clock: see
-    # test_successful_zero_row_cycle_publishes_a_new_generation.
-    monkeypatch.setattr(
-        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
-    )
     suffixes = iter(("a" * 32, "b" * 32))
     monkeypatch.setattr(
         main.uuid,
@@ -2074,11 +2102,6 @@ def test_failed_runs_upload_leaves_a_detectably_torn_generation(monkeypatch):
 def test_failed_meta_upload_leaves_both_parquets_on_the_new_generation(monkeypatch):
     s3 = _FailNthPut(_prior_generation(), fail_on_put=3)
     meta_before = s3.objects["argo/data/meta.json"]
-    # Retention must not be measured against the real clock: see
-    # test_successful_zero_row_cycle_publishes_a_new_generation.
-    monkeypatch.setattr(
-        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
-    )
 
     with pytest.raises(ClientError):
         _one_cluster_state(monkeypatch, s3)
@@ -2251,11 +2274,6 @@ def test_next_successful_cycle_republishes_a_torn_generation_as_one(monkeypatch)
     and republishes all three objects under a fresh id, making the stored set
     readable again without operator action."""
     s3 = _FailNthPut(_prior_generation(), fail_on_put=3)
-    # Retention must not be measured against the real clock: see
-    # test_successful_zero_row_cycle_publishes_a_new_generation.
-    monkeypatch.setattr(
-        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
-    )
     with pytest.raises(ClientError):
         _one_cluster_state(monkeypatch, s3)
     torn_meta = json.loads(s3.objects["argo/data/meta.json"])
@@ -2286,11 +2304,6 @@ def test_retry_after_each_partial_publication_preserves_commit_marker_and_ledger
     s3 = _FailNthPut(_prior_generation(), fail_on_put=fail_on_put)
     old_meta_bytes = s3.objects["argo/data/meta.json"]
     old_generation = json.loads(old_meta_bytes)["generation_id"]
-    # Retention must not be measured against the real clock: see
-    # test_successful_zero_row_cycle_publishes_a_new_generation.
-    monkeypatch.setattr(
-        ledger, "_cutoff", lambda _retention_days: "2026-09-16T19:00:00Z"
-    )
 
     with pytest.raises(ClientError) as raised:
         _one_cluster_state(monkeypatch, s3)
